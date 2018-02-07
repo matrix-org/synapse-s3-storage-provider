@@ -25,6 +25,7 @@ import boto3
 import botocore
 import logging
 import threading
+import os
 
 
 logger = logging.getLogger("synapse.s3")
@@ -41,12 +42,18 @@ class S3StorageProviderBackend(StorageProvider):
         self.cache_directory = hs.config.media_store_path
         self.bucket = config
 
-        self.s3 = boto3.client('s3')
-
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
-        pass
+        def _store_file():
+            with open(os.path.join(self.cache_directory, path), 'rb') as f:
+                boto3.resource('s3').Bucket(self.bucket).put_object(
+                    Key=path, Body=f,
+                )
+
+        return make_deferred_yieldable(
+            reactor.callInThread(_store_file)
+        )
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
