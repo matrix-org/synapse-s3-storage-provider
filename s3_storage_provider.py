@@ -19,6 +19,7 @@ from twisted.python.failure import Failure
 
 from synapse.rest.media.v1.storage_provider import StorageProvider
 from synapse.rest.media.v1._base import Responder
+from synapse.util.logcontext import make_deferred_yieldable
 
 import boto3
 import botocore
@@ -51,7 +52,7 @@ class S3StorageProviderBackend(StorageProvider):
         """See StorageProvider.fetch"""
         d = defer.Deferred()
         _S3DownloadThread(self.bucket, path, d).start()
-        return d
+        return make_deferred_yieldable(d)
 
     @staticmethod
     def parse_config(config):
