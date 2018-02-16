@@ -31,6 +31,10 @@ import os
 logger = logging.getLogger("synapse.s3")
 
 
+# The list of valid AWS storage class names
+_VALID_STORAGE_CLASSES = ('STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA')
+
+
 class S3StorageProviderBackend(StorageProvider):
     """
     Args:
@@ -40,16 +44,18 @@ class S3StorageProviderBackend(StorageProvider):
 
     def __init__(self, hs, config):
         self.cache_directory = hs.config.media_store_path
-        self.bucket = config
+        self.bucket = config["bucket"]
+        self.storage_class = config["storage_class"]
 
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
         def _store_file():
-            with open(os.path.join(self.cache_directory, path), 'rb') as f:
-                boto3.resource('s3').Bucket(self.bucket).put_object(
-                    Key=path, Body=f,
-                )
+            boto3.resource('s3').Bucket(self.bucket).upload_file(
+                Filename=os.path.join(self.cache_directory, path),
+                Key=path,
+                ExtraArgs={"StorageClass": self.storage_class},
+            )
 
         return make_deferred_yieldable(
             reactor.callInThread(_store_file)
@@ -68,11 +74,18 @@ class S3StorageProviderBackend(StorageProvider):
 
         The returned value is passed into the constructor.
 
-        In this case we only care about a single param, the bucket, so lets
-        just pull that out.
+        In this case we return a dict with fields, `bucket` and `storage_class`
         """
-        assert isinstance(config["bucket"], basestring)
-        return config["bucket"]
+        bucket = config["bucket"]
+        storage_class = config.get("storage_class", "STANDARD")
+
+        assert isinstance(bucket, basestring)
+        assert storage_class in _VALID_STORAGE_CLASSES
+
+        return {
+            "bucket": bucket,
+            "storage_class": storage_class,
+        }
 
 
 class _S3DownloadThread(threading.Thread):
