@@ -199,6 +199,11 @@ class _S3Responder(Responder):
         self.stop_event.set()
         self.wakeup_event.set()
 
+        # Always unregister from the consumer
+        if self.consumer:
+            self.consumer.unregisterProducer()
+            self.consumer = None
+
     def resumeProducing(self):
         """See IPullProducer.resumeProducing
         """
@@ -223,19 +228,11 @@ class _S3Responder(Responder):
         """Called when a fatal error occured while getting data. Called by
         _S3DownloadThread.
         """
-        if self.consumer:
-            self.consumer.unregisterProducer()
-            self.consumer = None
-
         if not self.deferred.called:
             self.deferred.errback(failure)
 
     def _finish(self):
         """Called when there is no more data to write. Called by _S3DownloadThread.
         """
-        if self.consumer:
-            self.consumer.unregisterProducer()
-            self.consumer = None
-
         if not self.deferred.called:
             self.deferred.callback(None)
