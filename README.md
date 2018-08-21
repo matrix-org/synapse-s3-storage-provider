@@ -21,6 +21,8 @@ media_storage_providers:
   store_synchronous: True
   config:
     bucket: <S3_BUCKET_NAME>
+    # optional for non-AWS S3-like services:
+    endpoint_url: <S3_LIKE_SERVICE_ENDPOINT_URL>
 ```
 
 This module uses `boto3`, and so the credentials should be specified as
