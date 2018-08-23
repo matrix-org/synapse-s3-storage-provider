@@ -124,7 +124,7 @@ class _S3DownloadThread(threading.Thread):
 
         producer = _S3Responder()
         reactor.callFromThread(self.deferred.callback, producer)
-        _stream_to_producer(self.deferred, resp["Body"], timeout=90.)
+        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.)
 
 
 def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
