@@ -13,20 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+import os
+import threading
+
+from six import string_types
+
+import boto3
+import botocore
 
 from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
 
-from synapse.rest.media.v1.storage_provider import StorageProvider
 from synapse.rest.media.v1._base import Responder
+from synapse.rest.media.v1.storage_provider import StorageProvider
 from synapse.util.logcontext import make_deferred_yieldable
-
-import boto3
-import botocore
-import logging
-import threading
-import os
-
 
 logger = logging.getLogger("synapse.s3")
 
@@ -82,7 +83,7 @@ class S3StorageProviderBackend(StorageProvider):
         bucket = config["bucket"]
         storage_class = config.get("storage_class", "STANDARD")
 
-        assert isinstance(bucket, basestring)
+        assert isinstance(bucket, string_types)
         assert storage_class in _VALID_STORAGE_CLASSES
 
         return {
