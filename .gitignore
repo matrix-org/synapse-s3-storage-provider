@@ -102,3 +102,4 @@ ENV/
 
 # Temp files
 *~
+_trial*
