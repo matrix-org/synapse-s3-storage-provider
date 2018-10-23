@@ -17,12 +17,15 @@ matrix:
     env: TOX_ENV=py27
 
   - python: 3.5
-    env: TOX_ENV=py36
+    env: TOX_ENV=py35
 
   - python: 3.6
     env: TOX_ENV=py36
 
   - python: 3.7
+    language: python
+    sudo: required
+    dist: xenial
     env: TOX_ENV=py37
 
   - python: 3.6
