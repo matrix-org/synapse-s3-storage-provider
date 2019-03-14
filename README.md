@@ -21,6 +21,12 @@ media_storage_providers:
   store_synchronous: True
   config:
     bucket: <S3_BUCKET_NAME>
+    # All of the below options are optional, for use with non-AWS S3-like
+    # services, or to specify access tokens here instead of some external method.
+    region_name: <S3_REGION_NAME>
+    endpoint_url: <S3_LIKE_SERVICE_ENDPOINT_URL>
+    access_key_id: <S3_ACCESS_KEY_ID>
+    secret_access_key: <S3_SECRET_ACCESS_KEY>
 ```
 
 This module uses `boto3`, and so the credentials should be specified as
