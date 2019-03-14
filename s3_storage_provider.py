@@ -51,8 +51,18 @@ class S3StorageProviderBackend(StorageProvider):
         self.bucket = config["bucket"]
         self.storage_class = config["storage_class"]
         self.api_kwargs = {}
+
+        if "region_name" in config:
+            self.api_kwargs["region_name"] = config["region_name"]
+
         if "endpoint_url" in config:
             self.api_kwargs["endpoint_url"] = config["endpoint_url"]
+
+        if "access_key_id" in config:
+            self.api_kwargs["aws_access_key_id"] = config["access_key_id"]
+
+        if "secret_access_key" in config:
+            self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
 
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
@@ -95,8 +105,17 @@ class S3StorageProviderBackend(StorageProvider):
             "storage_class": storage_class,
         }
 
+        if "region_name" in config:
+            result["region_name"] = config["region_name"]
+
         if "endpoint_url" in config:
             result["endpoint_url"] = config["endpoint_url"]
+
+        if "access_key_id" in config:
+            result["access_key_id"] = config["access_key_id"]
+
+        if "secret_access_key" in config:
+            result["secret_access_key"] = config["secret_access_key"]
 
         return result
 
