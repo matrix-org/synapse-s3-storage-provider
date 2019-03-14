@@ -125,7 +125,8 @@ class _S3DownloadThread(threading.Thread):
 
     Args:
         bucket (str): The S3 bucket which may have the file
-        api_kwargs (dict): Keyword arguments to pass when invoking the API. Generally `endpoint_url`.
+        api_kwargs (dict): Keyword arguments to pass when invoking the API.
+            Generally `endpoint_url`.
         key (str): The key of the file
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
