@@ -18,7 +18,13 @@ from twisted.python.failure import Failure
 from twisted.test.proto_helpers import MemoryReactorClock
 from twisted.trial import unittest
 
-from queue import Queue
+import sys
+is_py2 = sys.version[0] == '2'
+if is_py2:
+    from Queue import Queue
+else:
+    from queue import Queue
+
 from threading import Event, Thread
 
 from mock import Mock
