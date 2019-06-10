@@ -33,7 +33,8 @@ logger = logging.getLogger("synapse.s3")
 
 
 # The list of valid AWS storage class names
-_VALID_STORAGE_CLASSES = ('STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA')
+_VALID_STORAGE_CLASSES = ('STANDARD', 'REDUCED_REDUNDANCY',
+                          'STANDARD_IA', 'INTELLIGENT_TIERING')
 
 # Chunk size to use when reading from s3 connection in bytes
 READ_CHUNK_SIZE = 16 * 1024
