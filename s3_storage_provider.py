@@ -27,7 +27,10 @@ from twisted.python.failure import Failure
 
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
-from synapse.util.logcontext import make_deferred_yieldable
+try:
+    from synapse.logging.context import make_deferred_yieldable
+except ImportError:
+    from synapse.util.logcontext import make_deferred_yieldable
 
 logger = logging.getLogger("synapse.s3")
 
