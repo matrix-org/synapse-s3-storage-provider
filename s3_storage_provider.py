@@ -27,7 +27,8 @@ from twisted.python.failure import Failure
 
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
-from synapse.util.logcontext import make_deferred_yieldable
+from synapse.util.logcontext import make_deferred_yieldable, LoggingContext
+from twisted.python.threadpool import ThreadPool
 
 logger = logging.getLogger("synapse.s3")
 
@@ -51,6 +52,9 @@ class S3StorageProviderBackend(StorageProvider):
         self.bucket = config["bucket"]
         self.storage_class = config["storage_class"]
 
+        self._download_pool = ThreadPool(name="s3-download-pool", maxthreads=40)
+        self._download_pool.start()
+
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
@@ -61,14 +65,18 @@ class S3StorageProviderBackend(StorageProvider):
                 ExtraArgs={"StorageClass": self.storage_class},
             )
 
-        return make_deferred_yieldable(
-            reactor.callInThread(_store_file)
-        )
+        # XXX: reactor.callInThread doesn't return anything, so I don't think this does
+        # what the author intended.
+        return make_deferred_yieldable(reactor.callInThread(_store_file))
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
+        logcontext = LoggingContext.current_context()
+
         d = defer.Deferred()
-        _S3DownloadThread(self.bucket, path, d).start()
+        self._download_pool.callInThread(
+            s3_download_task, self.bucket, path, d, logcontext
+        )
         return make_deferred_yieldable(d)
 
     @staticmethod
@@ -92,7 +100,7 @@ class S3StorageProviderBackend(StorageProvider):
         }
 
 
-class _S3DownloadThread(threading.Thread):
+def s3_download_task(bucket, key, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
@@ -101,16 +109,11 @@ class _S3DownloadThread(threading.Thread):
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
             exist then resolves with None.
+        parent_logcontext (LoggingContext): the logcontext to report logs and metrics
+            against.
     """
-
-    def __init__(self, bucket, key, deferred):
-        super(_S3DownloadThread, self).__init__(name="s3-download")
-        self.bucket = bucket
-        self.key = key
-        self.deferred = deferred
-
-    def run(self):
-        logger.info("Fetching %s from S3", self.key)
+    with LoggingContext(parent_context=parent_logcontext):
+        logger.info("Fetching %s from S3", key)
 
         local_data = threading.local()
 
@@ -121,19 +124,19 @@ class _S3DownloadThread(threading.Thread):
             local_data.b3_client = s3 = b3_session.client('s3')
 
         try:
-            resp = s3.get_object(Bucket=self.bucket, Key=self.key)
+            resp = s3.get_object(Bucket=bucket, Key=key)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] in ("404", "NoSuchKey",):
                 logger.info("Media %s not found in S3", self.key)
                 reactor.callFromThread(self.deferred.callback, None)
                 return
 
-            reactor.callFromThread(self.deferred.errback, Failure())
+            reactor.callFromThread(deferred.errback, Failure())
             return
 
         producer = _S3Responder()
-        reactor.callFromThread(self.deferred.callback, producer)
-        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.)
+        reactor.callFromThread(deferred.callback, producer)
+        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.0)
 
 
 def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
