@@ -33,8 +33,12 @@ logger = logging.getLogger("synapse.s3")
 
 
 # The list of valid AWS storage class names
-_VALID_STORAGE_CLASSES = ('STANDARD', 'REDUCED_REDUNDANCY',
-                          'STANDARD_IA', 'INTELLIGENT_TIERING')
+_VALID_STORAGE_CLASSES = (
+    "STANDARD",
+    "REDUCED_REDUNDANCY",
+    "STANDARD_IA",
+    "INTELLIGENT_TIERING",
+)
 
 # Chunk size to use when reading from s3 connection in bytes
 READ_CHUNK_SIZE = 16 * 1024
@@ -70,15 +74,13 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             session = boto3.session.Session()
-            session.resource('s3', **self.api_kwargs).Bucket(self.bucket).upload_file(
+            session.resource("s3", **self.api_kwargs).Bucket(self.bucket).upload_file(
                 Filename=os.path.join(self.cache_directory, path),
                 Key=path,
                 ExtraArgs={"StorageClass": self.storage_class},
             )
 
-        return make_deferred_yieldable(
-            reactor.callInThread(_store_file)
-        )
+        return make_deferred_yieldable(reactor.callInThread(_store_file))
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
@@ -146,12 +148,12 @@ class _S3DownloadThread(threading.Thread):
         if not hasattr(local_data, "b3_session"):
             local_data.b3_session = boto3.session.Session()
         session = local_data.b3_session
-        s3 = session.client('s3', **self.api_kwargs)
+        s3 = session.client("s3", **self.api_kwargs)
 
         try:
             resp = s3.get_object(Bucket=self.bucket, Key=self.key)
         except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] in ("404", "NoSuchKey",):
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
                 reactor.callFromThread(self.deferred.callback, None)
                 return
 
@@ -160,7 +162,7 @@ class _S3DownloadThread(threading.Thread):
 
         producer = _S3Responder()
         reactor.callFromThread(self.deferred.callback, producer)
-        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.)
+        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.0)
 
 
 def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
@@ -219,6 +221,7 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
 class _S3Responder(Responder):
     """A Responder for S3. Created by _S3DownloadThread
     """
+
     def __init__(self):
         # Triggered by responder when more data has been requested (or
         # stop_event has been triggered)
