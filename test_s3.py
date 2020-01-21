@@ -19,7 +19,8 @@ from twisted.test.proto_helpers import MemoryReactorClock
 from twisted.trial import unittest
 
 import sys
-is_py2 = sys.version[0] == '2'
+
+is_py2 = sys.version[0] == "2"
 if is_py2:
     from Queue import Queue
 else:
@@ -29,9 +30,7 @@ from threading import Event, Thread
 
 from mock import Mock
 
-from s3_storage_provider import (
-    _stream_to_producer, _S3Responder, _ProducerStatus,
-)
+from s3_storage_provider import _stream_to_producer, _S3Responder, _ProducerStatus
 
 
 class StreamingProducerTestCase(unittest.TestCase):
@@ -52,10 +51,7 @@ class StreamingProducerTestCase(unittest.TestCase):
         self.thread = Thread(
             target=_stream_to_producer,
             args=(self.reactor, self.producer, self.body),
-            kwargs={
-                "status": self.producer_status,
-                "timeout": 1.0,
-            },
+            kwargs={"status": self.producer_status, "timeout": 1.0},
         )
         self.thread.daemon = True
         self.thread.start()
@@ -94,12 +90,12 @@ class StreamingProducerTestCase(unittest.TestCase):
         self.producer.pauseProducing()
         self.body.write(" string")
         self.wait_for_thread()
-        self.producer_status.wait_until_paused(10.)
+        self.producer_status.wait_until_paused(10.0)
         self.assertEqual("test string", self.written)
 
         # If we write again we remain paused and nothing gets written
         self.body.write(" second")
-        self.producer_status.wait_until_paused(10.)
+        self.producer_status.wait_until_paused(10.0)
         self.assertEqual("test string", self.written)
 
         # If we call resumeProducing the buffered data gets read and written.
@@ -165,6 +161,7 @@ class ThreadedMemoryReactorClock(MemoryReactorClock):
 class Channel(object):
     """Simple channel to mimic a thread safe file like object
     """
+
     def __init__(self):
         self._queue = Queue()
 
