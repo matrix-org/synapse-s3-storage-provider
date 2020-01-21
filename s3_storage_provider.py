@@ -24,11 +24,11 @@ import botocore
 
 from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
+from twisted.python.threadpool import ThreadPool
 
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
-from synapse.util.logcontext import make_deferred_yieldable, LoggingContext
-from twisted.python.threadpool import ThreadPool
+from synapse.util.logcontext import LoggingContext, make_deferred_yieldable
 
 logger = logging.getLogger("synapse.s3")
 
@@ -156,7 +156,7 @@ def s3_download_task(bucket, api_kwargs, key, deferred, parent_logcontext):
             s3 = local_data.b3_client
         except AttributeError:
             b3_session = boto3.session.Session()
-            local_data.b3_client = s3 = b3_session.client("s3", **self.api_kwargs)
+            local_data.b3_client = s3 = b3_session.client("s3", **api_kwargs)
 
         try:
             resp = s3.get_object(Bucket=bucket, Key=key)
