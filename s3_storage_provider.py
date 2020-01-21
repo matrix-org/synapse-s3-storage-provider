@@ -121,14 +121,14 @@ def s3_download_task(bucket, key, deferred, parent_logcontext):
             s3 = local_data.b3_client
         except AttributeError:
             b3_session = boto3.session.Session()
-            local_data.b3_client = s3 = b3_session.client('s3')
+            local_data.b3_client = s3 = b3_session.client("s3")
 
         try:
             resp = s3.get_object(Bucket=bucket, Key=key)
         except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] in ("404", "NoSuchKey",):
-                logger.info("Media %s not found in S3", self.key)
-                reactor.callFromThread(self.deferred.callback, None)
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
+                logger.info("Media %s not found in S3", key)
+                reactor.callFromThread(deferred.callback, None)
                 return
 
             reactor.callFromThread(deferred.errback, Failure())
