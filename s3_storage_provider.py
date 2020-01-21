@@ -110,7 +110,10 @@ class _S3DownloadThread(threading.Thread):
         self.deferred = deferred
 
     def run(self):
-        session = boto3.session.Session()
+        local_data = threading.local()
+        if not hasattr(local_data, "b3_session"):
+            local_data.b3_session = boto3.session.Session()
+        session = local_data.b3_session
         s3 = session.client('s3')
 
         try:
