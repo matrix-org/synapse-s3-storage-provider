@@ -27,6 +27,11 @@ media_storage_providers:
     endpoint_url: <S3_LIKE_SERVICE_ENDPOINT_URL>
     access_key_id: <S3_ACCESS_KEY_ID>
     secret_access_key: <S3_SECRET_ACCESS_KEY>
+
+    # also optional. The maximum number of concurrent threads which will be used
+    # to connect to S3. Each thread manages a single connection. Default is 40.
+    #
+    #threadpool_size: 20
 ```
 
 This module uses `boto3`, and so the credentials should be specified as

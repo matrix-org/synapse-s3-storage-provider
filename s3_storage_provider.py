@@ -70,7 +70,10 @@ class S3StorageProviderBackend(StorageProvider):
         if "secret_access_key" in config:
             self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
 
-        self._download_pool = ThreadPool(name="s3-download-pool", maxthreads=40)
+        threadpool_size = config.get("threadpool_size", 40)
+        self._download_pool = ThreadPool(
+            name="s3-download-pool", maxthreads=threadpool_size
+        )
         self._download_pool.start()
 
     def store_file(self, path, file_info):
