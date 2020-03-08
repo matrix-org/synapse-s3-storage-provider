@@ -28,8 +28,12 @@ media_storage_providers:
     access_key_id: <S3_ACCESS_KEY_ID>
     secret_access_key: <S3_SECRET_ACCESS_KEY>
 
-    # also optional. The maximum number of concurrent threads which will be used
-    # to connect to S3. Each thread manages a single connection. Default is 40.
+    # The object storage class used when uploading files to the bucket.
+    # Default is STANDARD.
+    #storage_class: "STANDARD_IA"
+
+    # The maximum number of concurrent threads which will be used to connect
+    # to S3. Each thread manages a single connection. Default is 40.
     #
     #threadpool_size: 20
 ```
