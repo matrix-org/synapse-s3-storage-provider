@@ -24,17 +24,22 @@ import botocore
 
 from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
+from twisted.python.threadpool import ThreadPool
 
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
-from synapse.util.logcontext import make_deferred_yieldable, LoggingContext
-from twisted.python.threadpool import ThreadPool
+from synapse.util.logcontext import LoggingContext, make_deferred_yieldable
 
 logger = logging.getLogger("synapse.s3")
 
 
 # The list of valid AWS storage class names
-_VALID_STORAGE_CLASSES = ('STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA')
+_VALID_STORAGE_CLASSES = (
+    "STANDARD",
+    "REDUCED_REDUNDANCY",
+    "STANDARD_IA",
+    "INTELLIGENT_TIERING",
+)
 
 # Chunk size to use when reading from s3 connection in bytes
 READ_CHUNK_SIZE = 16 * 1024
@@ -51,6 +56,25 @@ class S3StorageProviderBackend(StorageProvider):
         self.cache_directory = hs.config.media_store_path
         self.bucket = config["bucket"]
         self.storage_class = config["storage_class"]
+        self.api_kwargs = {}
+
+        if "region_name" in config:
+            self.api_kwargs["region_name"] = config["region_name"]
+
+        if "endpoint_url" in config:
+            self.api_kwargs["endpoint_url"] = config["endpoint_url"]
+
+        if "access_key_id" in config:
+            self.api_kwargs["aws_access_key_id"] = config["access_key_id"]
+
+        if "secret_access_key" in config:
+            self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
+
+        threadpool_size = config.get("threadpool_size", 40)
+        self._download_pool = ThreadPool(
+            name="s3-download-pool", maxthreads=threadpool_size
+        )
+        self._download_pool.start()
 
         self._download_pool = ThreadPool(name="s3-download-pool", maxthreads=40)
         self._download_pool.start()
@@ -59,7 +83,8 @@ class S3StorageProviderBackend(StorageProvider):
         """See StorageProvider.store_file"""
 
         def _store_file():
-            boto3.resource('s3').Bucket(self.bucket).upload_file(
+            session = boto3.session.Session()
+            session.resource("s3", **self.api_kwargs).Bucket(self.bucket).upload_file(
                 Filename=os.path.join(self.cache_directory, path),
                 Key=path,
                 ExtraArgs={"StorageClass": self.storage_class},
@@ -75,7 +100,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         d = defer.Deferred()
         self._download_pool.callInThread(
-            s3_download_task, self.bucket, path, d, logcontext
+            s3_download_task, self.bucket, self.api_kwargs, path, d, logcontext
         )
         return make_deferred_yieldable(d)
 
@@ -94,17 +119,33 @@ class S3StorageProviderBackend(StorageProvider):
         assert isinstance(bucket, string_types)
         assert storage_class in _VALID_STORAGE_CLASSES
 
-        return {
+        result = {
             "bucket": bucket,
             "storage_class": storage_class,
         }
 
+        if "region_name" in config:
+            result["region_name"] = config["region_name"]
 
-def s3_download_task(bucket, key, deferred, parent_logcontext):
+        if "endpoint_url" in config:
+            result["endpoint_url"] = config["endpoint_url"]
+
+        if "access_key_id" in config:
+            result["access_key_id"] = config["access_key_id"]
+
+        if "secret_access_key" in config:
+            result["secret_access_key"] = config["secret_access_key"]
+
+        return result
+
+
+def s3_download_task(bucket, api_kwargs, key, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
         bucket (str): The S3 bucket which may have the file
+        api_kwargs (dict): Keyword arguments to pass when invoking the API.
+            Generally `endpoint_url`.
         key (str): The key of the file
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
@@ -121,7 +162,7 @@ def s3_download_task(bucket, key, deferred, parent_logcontext):
             s3 = local_data.b3_client
         except AttributeError:
             b3_session = boto3.session.Session()
-            local_data.b3_client = s3 = b3_session.client("s3")
+            local_data.b3_client = s3 = b3_session.client("s3", **api_kwargs)
 
         try:
             resp = s3.get_object(Bucket=bucket, Key=key)
@@ -195,6 +236,7 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
 class _S3Responder(Responder):
     """A Responder for S3. Created by _S3DownloadThread
     """
+
     def __init__(self):
         # Triggered by responder when more data has been requested (or
         # stop_event has been triggered)
