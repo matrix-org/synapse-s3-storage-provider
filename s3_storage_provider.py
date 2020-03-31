@@ -76,9 +76,6 @@ class S3StorageProviderBackend(StorageProvider):
         )
         self._download_pool.start()
 
-        self._download_pool = ThreadPool(name="s3-download-pool", maxthreads=40)
-        self._download_pool.start()
-
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
