@@ -53,7 +53,7 @@ Once the package is installed, the script should be run somewhat like the
 following. We suggest using tmux or screen as these can take a long time on
 larger servers.
 
-`database.yml` should contain the keys that would be passed to psycopg2 to
+`database.yaml` should contain the keys that would be passed to psycopg2 to
 connect to your database. They can be found in the contents of the
 `database`.`args` parameter in your homeserver.yaml.
 
