@@ -44,14 +44,14 @@ described [here](https://boto3.readthedocs.io/en/latest/guide/configuration.html
 Regular cleanup job
 -------------------
 
-There is additionally a `s3_media_upload.py` which can be used in a regular job
-to upload content to s3, then delete that from local disk. This script can be
-used in combination with configuration for the storage provider to pull media
-from s3, but upload it asynchronously.
+There is additionally a script at `scripts/s3_media_upload` which can be used
+in a regular job to upload content to s3, then delete that from local disk.
+This script can be used in combination with configuration for the storage
+provider to pull media from s3, but upload it asynchronously.
 
 Once the package is installed, the script should be run somewhat like the
-following. We suggest using tmux or screen as these can take a long time on
-larger servers.
+following. We suggest using `tmux` or `screen` as these can take a long time
+on larger servers.
 
 `database.yaml` should contain the keys that would be passed to psycopg2 to
 connect to your database. They can be found in the contents of the
