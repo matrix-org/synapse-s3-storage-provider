@@ -27,12 +27,17 @@ from twisted.python.failure import Failure
 from twisted.python.threadpool import ThreadPool
 
 from synapse.logging.context import (
-    current_context,
     LoggingContext,
     make_deferred_yieldable,
 )
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
+
+# Synapse 1.13.0 moved current_context to a module-level function.
+try:
+    from synapse.logging.context import current_context
+except ImportError:
+    current_context = LoggingContext.current_context
 
 logger = logging.getLogger("synapse.s3")
 
