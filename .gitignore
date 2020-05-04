@@ -103,3 +103,6 @@ ENV/
 # Temp files
 *~
 _trial*
+
+# PyCharm project settings
+.idea
