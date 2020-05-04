@@ -26,10 +26,7 @@ from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
 from twisted.python.threadpool import ThreadPool
 
-from synapse.logging.context import (
-    LoggingContext,
-    make_deferred_yieldable,
-)
+from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
