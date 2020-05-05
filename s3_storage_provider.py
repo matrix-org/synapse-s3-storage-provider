@@ -26,9 +26,15 @@ from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
 from twisted.python.threadpool import ThreadPool
 
+from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
-from synapse.util.logcontext import LoggingContext, make_deferred_yieldable
+
+# Synapse 1.13.0 moved current_context to a module-level function.
+try:
+    from synapse.logging.context import current_context
+except ImportError:
+    current_context = LoggingContext.current_context
 
 logger = logging.getLogger("synapse.s3")
 
@@ -93,7 +99,7 @@ class S3StorageProviderBackend(StorageProvider):
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
-        logcontext = LoggingContext.current_context()
+        logcontext = current_context()
 
         d = defer.Deferred()
         self._download_pool.callInThread(
