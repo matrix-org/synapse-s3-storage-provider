@@ -432,7 +432,8 @@ def main():
 
     if args.cmd == "upload":
         sqlite_conn = get_sqlite_conn(parser)
-        s3 = boto3.client("s3")
+        s3 = boto3.client("s3",
+                          endpoint_url=os.environ.get('AWS_ENDPOINT_URL'))
         run_upload(
             s3,
             args.bucket,
