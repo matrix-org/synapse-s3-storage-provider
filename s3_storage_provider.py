@@ -82,6 +82,13 @@ class S3StorageProviderBackend(StorageProvider):
         )
         self._download_pool.start()
 
+        # Manually stop the thread pool on shutdown. If we don't do this then
+        # stopping Synapse takes an extra ~30s as Python waits for the threads
+        # to exit.
+        reactor.addSystemEventTrigger(
+            "during", "shutdown", self._download_pool.stop,
+        )
+
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
