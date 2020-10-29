@@ -421,6 +421,7 @@ def main():
 
     args = parser.parse_args()
     if args.no_progress:
+        global progress
         progress=False
 
     if args.cmd == "write":
