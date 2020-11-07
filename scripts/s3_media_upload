@@ -405,6 +405,12 @@ def main():
         help="Deletes local copy from media store on succesful upload",
     )
 
+    upload_parser.add_argument(
+        "--endpoint-url",
+        help="S3 endpoint url to use",
+        default=None
+    )
+
     args = parser.parse_args()
 
     if args.cmd == "write":
@@ -432,7 +438,7 @@ def main():
 
     if args.cmd == "upload":
         sqlite_conn = get_sqlite_conn(parser)
-        s3 = boto3.client("s3")
+        s3 = boto3.client("s3", endpoint_url=args.endpoint_url)
         run_upload(
             s3,
             args.bucket,
