@@ -27,7 +27,7 @@ SCHEMA = """
     CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted);
 """
 
-progress=True
+progress = True
 
 def parse_duration(string):
     """Parse a string into a duration supports suffix of d, m or y.
@@ -422,7 +422,7 @@ def main():
     args = parser.parse_args()
     if args.no_progress:
         global progress
-        progress=False
+        progress = False
 
     if args.cmd == "write":
         sqlite_conn = get_sqlite_conn(parser)
