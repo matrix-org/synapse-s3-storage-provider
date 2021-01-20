@@ -16,5 +16,6 @@ setup(
         "psycopg2>=2.7.5<3.0",
         "PyYAML>=3.13<4.0",
         "tqdm>=4.26.0<5.0",
+        "Twisted",
     ],
 )

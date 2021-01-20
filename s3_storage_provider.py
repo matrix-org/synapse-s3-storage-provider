@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Copyright 2018 New Vector Ltd
+# Copyright 2021 The Matrix.org Foundation C.I.C.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +23,7 @@ from six import string_types
 import boto3
 import botocore
 
-from twisted.internet import defer, reactor
+from twisted.internet import defer, reactor, threads
 from twisted.python.failure import Failure
 from twisted.python.threadpool import ThreadPool
 
@@ -79,16 +80,14 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_client = None
 
         threadpool_size = config.get("threadpool_size", 40)
-        self._download_pool = ThreadPool(
-            name="s3-download-pool", maxthreads=threadpool_size
-        )
-        self._download_pool.start()
+        self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
+        self._s3_pool.start()
 
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
         # to exit.
         reactor.addSystemEventTrigger(
-            "during", "shutdown", self._download_pool.stop,
+            "during", "shutdown", self._s3_pool.stop,
         )
 
     def _get_s3_client(self):
@@ -108,16 +107,16 @@ class S3StorageProviderBackend(StorageProvider):
                 ExtraArgs={"StorageClass": self.storage_class},
             )
 
-        # XXX: reactor.callInThread doesn't return anything, so I don't think this does
-        # what the author intended.
-        return make_deferred_yieldable(reactor.callInThread(_store_file))
+        return make_deferred_yieldable(
+            threads.deferToThreadPool(reactor, self._s3_pool, _store_file)
+        )
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
         logcontext = current_context()
 
         d = defer.Deferred()
-        self._download_pool.callInThread(
+        self._s3_pool.callInThread(
             s3_download_task, self._get_s3_client(), self.bucket, path, d, logcontext
         )
         return make_deferred_yieldable(d)
