@@ -100,12 +100,15 @@ class S3StorageProviderBackend(StorageProvider):
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
+        parent_logcontext = current_context()
+
         def _store_file():
-            self._get_s3_client().upload_file(
-                Filename=os.path.join(self.cache_directory, path),
-                Key=path,
-                ExtraArgs={"StorageClass": self.storage_class},
-            )
+            with LoggingContext(parent_context=parent_logcontext):
+                self._get_s3_client().upload_file(
+                    Filename=os.path.join(self.cache_directory, path),
+                    Key=path,
+                    ExtraArgs={"StorageClass": self.storage_class},
+                )
 
         return make_deferred_yieldable(
             threads.deferToThreadPool(reactor, self._s3_pool, _store_file)
