@@ -102,8 +102,7 @@ class S3StorageProviderBackend(StorageProvider):
         """See StorageProvider.store_file"""
 
         def _store_file():
-            session = boto3.session.Session()
-            session.resource("s3", **self.api_kwargs).Bucket(self.bucket).upload_file(
+            self._get_s3_client().upload_file(
                 Filename=os.path.join(self.cache_directory, path),
                 Key=path,
                 ExtraArgs={"StorageClass": self.storage_class},
