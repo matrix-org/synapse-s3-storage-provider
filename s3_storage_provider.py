@@ -76,6 +76,8 @@ class S3StorageProviderBackend(StorageProvider):
         if "secret_access_key" in config:
             self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
 
+        self._s3_client = None
+
         threadpool_size = config.get("threadpool_size", 40)
         self._download_pool = ThreadPool(
             name="s3-download-pool", maxthreads=threadpool_size
@@ -88,6 +90,13 @@ class S3StorageProviderBackend(StorageProvider):
         reactor.addSystemEventTrigger(
             "during", "shutdown", self._download_pool.stop,
         )
+
+    def _get_s3_client(self):
+        s3 = self._s3_client
+        if not s3:
+            b3_session = boto3.session.Session()
+            self._s3_client = s3 = b3_session.client("s3", **self.api_kwargs)
+        return s3
 
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
@@ -110,7 +119,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         d = defer.Deferred()
         self._download_pool.callInThread(
-            s3_download_task, self.bucket, self.api_kwargs, path, d, logcontext
+            s3_download_task, self._get_s3_client(), self.bucket, path, d, logcontext
         )
         return make_deferred_yieldable(d)
 
@@ -149,13 +158,12 @@ class S3StorageProviderBackend(StorageProvider):
         return result
 
 
-def s3_download_task(bucket, api_kwargs, key, deferred, parent_logcontext):
+def s3_download_task(s3_client, bucket, key, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
+        s3_client: boto3 s3 client
         bucket (str): The S3 bucket which may have the file
-        api_kwargs (dict): Keyword arguments to pass when invoking the API.
-            Generally `endpoint_url`.
         key (str): The key of the file
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
@@ -166,16 +174,8 @@ def s3_download_task(bucket, api_kwargs, key, deferred, parent_logcontext):
     with LoggingContext(parent_context=parent_logcontext):
         logger.info("Fetching %s from S3", key)
 
-        local_data = threading.local()
-
         try:
-            s3 = local_data.b3_client
-        except AttributeError:
-            b3_session = boto3.session.Session()
-            local_data.b3_client = s3 = b3_session.client("s3", **api_kwargs)
-
-        try:
-            resp = s3.get_object(Bucket=bucket, Key=key)
+            resp = s3_client.get_object(Bucket=bucket, Key=key)
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
                 logger.info("Media %s not found in S3", key)
