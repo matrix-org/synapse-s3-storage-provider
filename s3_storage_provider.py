@@ -78,6 +78,7 @@ class S3StorageProviderBackend(StorageProvider):
             self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
 
         self._s3_client = None
+        self._s3_client_lock = threading.Lock()
 
         threadpool_size = config.get("threadpool_size", 40)
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
@@ -91,11 +92,24 @@ class S3StorageProviderBackend(StorageProvider):
         )
 
     def _get_s3_client(self):
+        # this method is designed to be thread-safe, so that we can share a
+        # single boto3 client across multiple threads.
+        #
+        # (XXX: is creating a client actually a blocking operation, or could we do
+        # this on the main thread, to simplify all this?)
+
+        # first of all, do a fast lock-free check
         s3 = self._s3_client
-        if not s3:
-            b3_session = boto3.session.Session()
-            self._s3_client = s3 = b3_session.client("s3", **self.api_kwargs)
-        return s3
+        if s3:
+            return s3
+
+        # no joy, grab the lock and repeat the check
+        with self._s3_client_lock:
+            s3 = self._s3_client
+            if not s3:
+                b3_session = boto3.session.Session()
+                self._s3_client = s3 = b3_session.client("s3", **self.api_kwargs)
+            return s3
 
     def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
@@ -120,9 +134,11 @@ class S3StorageProviderBackend(StorageProvider):
         logcontext = current_context()
 
         d = defer.Deferred()
-        self._s3_pool.callInThread(
-            s3_download_task, self._get_s3_client(), self.bucket, path, d, logcontext
-        )
+
+        def _get_file():
+            s3_download_task(self._get_s3_client(), self.bucket, path, d, logcontext)
+
+        self._s3_pool.callInThread(_get_file)
         return make_deferred_yieldable(d)
 
     @staticmethod
