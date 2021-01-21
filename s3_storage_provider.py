@@ -106,6 +106,7 @@ class S3StorageProviderBackend(StorageProvider):
             with LoggingContext(parent_context=parent_logcontext):
                 self._get_s3_client().upload_file(
                     Filename=os.path.join(self.cache_directory, path),
+                    Bucket=self.bucket,
                     Key=path,
                     ExtraArgs={"StorageClass": self.storage_class},
                 )
