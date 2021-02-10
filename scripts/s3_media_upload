@@ -408,6 +408,7 @@ def main():
             "REDUCED_REDUNDANCY",
             "STANDARD_IA",
             "ONEZONE_IA",
+            "INTELLIGENT_TIERING",
         ],
         default="STANDARD",
     )
