@@ -29,6 +29,7 @@ SCHEMA = """
 
 progress = True
 
+
 def parse_duration(string):
     """Parse a string into a duration supports suffix of d, m or y.
     """
@@ -50,9 +51,7 @@ def parse_duration(string):
     elif suffix == "y":
         then = now - datetime.timedelta(days=365 * number)
     else:
-        raise argparse.ArgumentTypeError(
-            "duration must end in 'd', 'm' or 'y'"
-        )
+        raise argparse.ArgumentTypeError("duration must end in 'd', 'm' or 'y'")
 
     return then
 
@@ -79,8 +78,7 @@ def run_update_db(postgres_conn, sqlite_conn, before_date):
     last_access_ts = int(before_date.timestamp() * 1000)
 
     print(
-        "Syncing files that haven't been accessed since:",
-        before_date.isoformat(" "),
+        "Syncing files that haven't been accessed since:", before_date.isoformat(" "),
     )
 
     update_count = 0
@@ -96,7 +94,7 @@ def run_update_db(postgres_conn, sqlite_conn, before_date):
                         INSERT OR IGNORE INTO media
                         (origin, media_id, filesystem_id, type, known_deleted)
                         VALUES (?, ?, ?, ?, ?)
-                    """,
+                        """,
                         (origin, media_id, filesystem_id, mtype, False),
                     )
                     update_count += sqlite_cur.rowcount
@@ -112,9 +110,9 @@ def run_check_delete(sqlite_conn, base_path):
     deleted = []
     if progress:
         it = tqdm.tqdm(
-                get_not_deleted(sqlite_conn),
-                unit="files",
-                total=get_not_deleted_count(sqlite_conn)
+            get_not_deleted(sqlite_conn),
+            unit="files",
+            total=get_not_deleted_count(sqlite_conn),
         )
     else:
         it = get_not_deleted(sqlite_conn)
@@ -162,7 +160,7 @@ def mark_as_deleted(sqlite_conn, origin, media_id):
             """
             UPDATE media SET known_deleted = ?
             WHERE origin = ? AND media_id = ?
-        """,
+            """,
             (True, origin, media_id),
         )
 
@@ -176,9 +174,9 @@ def get_not_deleted_count(sqlite_conn):
         """
         SELECT COALESCE(count(*), 0) FROM media
         WHERE NOT known_deleted
-    """
+        """
     )
-    count, = cur.fetchone()
+    (count,) = cur.fetchone()
     return count
 
 
@@ -191,7 +189,7 @@ def get_not_deleted(sqlite_conn):
         """
         SELECT origin, media_id, filesystem_id, type FROM media
         WHERE NOT known_deleted
-    """
+        """
     )
     return cur
 
@@ -201,10 +199,7 @@ def to_path(origin, filesystem_id, m_type):
     """
     if m_type == "local":
         file_path = os.path.join(
-            "local_content",
-            filesystem_id[:2],
-            filesystem_id[2:4],
-            filesystem_id[4:],
+            "local_content", filesystem_id[:2], filesystem_id[2:4], filesystem_id[4:],
         )
     elif m_type == "remote":
         file_path = os.path.join(
@@ -241,9 +236,7 @@ def run_write(sqlite_conn, output_file):
         print(file_path, file=output_file)
 
 
-def run_upload(
-    s3, bucket, sqlite_conn, base_path, should_delete, storage_class
-):
+def run_upload(s3, bucket, sqlite_conn, base_path, should_delete, storage_class):
     """Entry point for upload command
     """
     total = get_not_deleted_count(sqlite_conn)
@@ -340,7 +333,12 @@ def get_postgres_conn(parser):
 
 def main():
     parser = argparse.ArgumentParser(prog="s3_media_upload")
-    parser.add_argument("--no-progress", help="do not show progress bars", action="store_true", dest="no_progress")
+    parser.add_argument(
+        "--no-progress",
+        help="do not show progress bars",
+        action="store_true",
+        dest="no_progress",
+    )
     subparsers = parser.add_subparsers(help="command to run", dest="cmd")
 
     update_db_parser = subparsers.add_parser(
@@ -356,8 +354,7 @@ def main():
 
     deleted_parser = subparsers.add_parser(
         "check-deleted",
-        help="Check whether files in the local cache still exist under given"
-        " path",
+        help="Check whether files in the local cache still exist under given path",
     )
     deleted_parser.add_argument(
         "base_path", help="Base path of the media store directory"
@@ -421,9 +418,7 @@ def main():
     )
 
     upload_parser.add_argument(
-        "--endpoint-url",
-        help="S3 endpoint url to use",
-        default=None
+        "--endpoint-url", help="S3 endpoint url to use", default=None
     )
 
     args = parser.parse_args()
