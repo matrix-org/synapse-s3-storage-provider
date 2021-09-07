@@ -55,104 +55,6 @@ def parse_duration(string):
     return then
 
 
-def run_update_db(postgres_conn, sqlite_conn, before_date):
-    """Entry point for update-db command
-    """
-
-    local_sql = """
-        SELECT '', media_id, media_id
-        FROM local_media_repository
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
-            AND url_cache IS NULL
-    """
-
-    remote_sql = """
-        SELECT media_origin, media_id, filesystem_id
-        FROM remote_media_cache
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
-    """
-
-    last_access_ts = int(before_date.timestamp() * 1000)
-
-    print(
-        "Syncing files that haven't been accessed since:", before_date.isoformat(" "),
-    )
-
-    update_count = 0
-    with sqlite_conn:
-        sqlite_cur = sqlite_conn.cursor()
-        with postgres_conn.cursor() as pg_curs:
-            for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
-                pg_curs.execute(sql, (last_access_ts,))
-
-                for (origin, media_id, filesystem_id) in pg_curs:
-                    sqlite_cur.execute(
-                        """
-                        INSERT OR IGNORE INTO media
-                        (origin, media_id, filesystem_id, type, known_deleted)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (origin, media_id, filesystem_id, mtype, False),
-                    )
-                    update_count += sqlite_cur.rowcount
-
-    print("Synced", update_count, "new rows")
-
-    postgres_conn.close()
-
-
-def run_check_delete(sqlite_conn, base_path):
-    """Entry point for check-deleted command
-    """
-    deleted = []
-    if progress:
-        it = tqdm.tqdm(
-            get_not_deleted(sqlite_conn),
-            unit="files",
-            total=get_not_deleted_count(sqlite_conn),
-        )
-    else:
-        it = get_not_deleted(sqlite_conn)
-        print("Checking on ", get_not_deleted_count(sqlite_conn), " undeleted files")
-
-    for origin, media_id, filesystem_id, m_type in it:
-        if m_type == "local":
-            file_path = os.path.join(
-                base_path,
-                "local_content",
-                filesystem_id[:2],
-                filesystem_id[2:4],
-                filesystem_id[4:],
-            )
-        elif m_type == "remote":
-            file_path = os.path.join(
-                base_path,
-                "remote_content",
-                origin,
-                filesystem_id[:2],
-                filesystem_id[2:4],
-                filesystem_id[4:],
-            )
-        else:
-            raise Exception("Unexpected media type %r", m_type)
-
-        if not os.path.exists(file_path):
-            deleted.append((origin, media_id))
-
-    with sqlite_conn:
-        sqlite_conn.executemany(
-            """
-            UPDATE media SET known_deleted = ?
-            WHERE origin = ? AND media_id = ?
-            """,
-            ((True, o, m) for o, m in deleted),
-        )
-
-    print("Updated", len(deleted), "as deleted")
-
-
 def mark_as_deleted(sqlite_conn, origin, media_id):
     with sqlite_conn:
         sqlite_conn.execute(
@@ -233,6 +135,86 @@ def run_write(sqlite_conn, output_file):
     for origin, _, filesystem_id, m_type in get_not_deleted(sqlite_conn):
         file_path = to_path(origin, filesystem_id, m_type)
         print(file_path, file=output_file)
+
+
+def run_update_db(postgres_conn, sqlite_conn, before_date):
+    """Entry point for update-db command
+    """
+
+    local_sql = """
+        SELECT '', media_id, media_id
+        FROM local_media_repository
+        WHERE
+            COALESCE(last_access_ts, created_ts) < %s
+            AND url_cache IS NULL
+    """
+
+    remote_sql = """
+        SELECT media_origin, media_id, filesystem_id
+        FROM remote_media_cache
+        WHERE
+            COALESCE(last_access_ts, created_ts) < %s
+    """
+
+    last_access_ts = int(before_date.timestamp() * 1000)
+
+    print(
+        "Syncing files that haven't been accessed since:", before_date.isoformat(" "),
+    )
+
+    update_count = 0
+    with sqlite_conn:
+        sqlite_cur = sqlite_conn.cursor()
+        with postgres_conn.cursor() as pg_curs:
+            for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
+                pg_curs.execute(sql, (last_access_ts,))
+
+                for (origin, media_id, filesystem_id) in pg_curs:
+                    sqlite_cur.execute(
+                        """
+                        INSERT OR IGNORE INTO media
+                        (origin, media_id, filesystem_id, type, known_deleted)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (origin, media_id, filesystem_id, mtype, False),
+                    )
+                    update_count += sqlite_cur.rowcount
+
+    print("Synced", update_count, "new rows")
+
+    postgres_conn.close()
+
+
+def run_check_delete(sqlite_conn, base_path):
+    """Entry point for check-deleted command
+    """
+    deleted = []
+    if progress:
+        it = tqdm.tqdm(
+            get_not_deleted(sqlite_conn),
+            unit="files",
+            total=get_not_deleted_count(sqlite_conn),
+        )
+    else:
+        it = get_not_deleted(sqlite_conn)
+        print("Checking on ", get_not_deleted_count(sqlite_conn), " undeleted files")
+
+    for origin, media_id, filesystem_id, m_type in it:
+        rel_file_path = to_path(origin, filesystem_id, m_type)
+        file_path = os.path.join(base_path, rel_file_path)
+        if not os.path.exists(file_path):
+            deleted.append((origin, media_id))
+
+    with sqlite_conn:
+        sqlite_conn.executemany(
+            """
+            UPDATE media SET known_deleted = ?
+            WHERE origin = ? AND media_id = ?
+            """,
+            ((True, o, m) for o, m in deleted),
+        )
+
+    print("Updated", len(deleted), "as deleted")
 
 
 def run_upload(s3, bucket, sqlite_conn, base_path, should_delete, storage_class):
