@@ -187,6 +187,11 @@ def run_write(sqlite_conn, output_file):
         file_path = to_path(origin, filesystem_id, m_type)
         print(file_path, file=output_file)
 
+        # Print thumbnail directories with a trailing '/'
+        thumbnail_path = to_thumbnail_dir(origin, filesystem_id, m_type)
+        thumbnail_path = os.path.join(thumbnail_path, "")
+        print(thumbnail_path, file=output_file)
+
 
 def run_update_db(postgres_conn, sqlite_conn, before_date):
     """Entry point for update-db command
@@ -409,8 +414,8 @@ def main():
 
     write_parser = subparsers.add_parser(
         "write",
-        help="Outputs all files in local cache that we may not have deleted,"
-        " check-deleted should be run first to update cache.",
+        help="Outputs all file and directory paths in the local cache that we may not"
+        " have deleted. check-deleted should be run first to update cache.",
     )
     write_parser.add_argument(
         "out",
