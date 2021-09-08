@@ -19,6 +19,8 @@ SCHEMA = """
         filesystem_id TEXT NOT NULL,
         -- Type is "local" or "remote"
         type TEXT NOT NULL,
+        -- indicates whether the media and all its thumbnails have been deleted from the
+        -- local cache
         known_deleted BOOLEAN NOT NULL
     );
 
@@ -116,6 +118,55 @@ def to_path(origin, filesystem_id, m_type):
     return file_path
 
 
+def to_thumbnail_dir(origin, filesystem_id, m_type):
+    """Get a relative path to the given media's thumbnail directory
+    """
+    if m_type == "local":
+        thumbnail_path = os.path.join(
+            "local_thumbnails",
+            filesystem_id[:2],
+            filesystem_id[2:4],
+            filesystem_id[4:],
+        )
+    elif m_type == "remote":
+        thumbnail_path = os.path.join(
+            "remote_thumbnail",
+            origin,
+            filesystem_id[:2],
+            filesystem_id[2:4],
+            filesystem_id[4:],
+        )
+    else:
+        raise Exception("Unexpected media type %r", m_type)
+
+    return thumbnail_path
+
+
+def get_local_files(base_path, origin, filesystem_id, m_type):
+    """Get a list of relative paths to undeleted files for the given media
+    """
+    local_files = []
+
+    original_path = to_path(origin, filesystem_id, m_type)
+    if os.path.exists(os.path.join(base_path, original_path)):
+        local_files.append(original_path)
+
+    thumbnail_path = to_thumbnail_dir(origin, filesystem_id, m_type)
+    try:
+        with os.scandir(os.path.join(base_path, thumbnail_path)) as dir_entries:
+            for dir_entry in dir_entries:
+                if dir_entry.is_file:
+                    local_files.append(os.path.join(thumbnail_path, dir_entry.name))
+    except FileNotFoundError:
+        # The thumbnail directory does not exist
+        pass
+    except NotADirectoryError:
+        # The thumbnail directory is not a directory for some reason
+        pass
+
+    return local_files
+
+
 def check_file_in_s3(s3, bucket, key):
     """Check the file exists in S3 (though it could be different)
     """
@@ -200,9 +251,8 @@ def run_check_delete(sqlite_conn, base_path):
         print("Checking on ", get_not_deleted_count(sqlite_conn), " undeleted files")
 
     for origin, media_id, filesystem_id, m_type in it:
-        rel_file_path = to_path(origin, filesystem_id, m_type)
-        file_path = os.path.join(base_path, rel_file_path)
-        if not os.path.exists(file_path):
+        local_files = get_local_files(base_path, origin, filesystem_id, m_type)
+        if not local_files:
             deleted.append((origin, media_id))
 
     with sqlite_conn:
