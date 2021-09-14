@@ -155,7 +155,7 @@ def get_local_files(base_path, origin, filesystem_id, m_type):
     try:
         with os.scandir(os.path.join(base_path, thumbnail_path)) as dir_entries:
             for dir_entry in dir_entries:
-                if dir_entry.is_file:
+                if dir_entry.is_file():
                     local_files.append(os.path.join(thumbnail_path, dir_entry.name))
     except FileNotFoundError:
         # The thumbnail directory does not exist
