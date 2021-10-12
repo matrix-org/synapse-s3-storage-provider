@@ -60,7 +60,7 @@ class S3StorageProviderBackend(StorageProvider):
     """
 
     def __init__(self, hs, config):
-        self.cache_directory = hs.config.media_store_path
+        self.cache_directory = hs.config.media.media_store_path
         self.bucket = config["bucket"]
         self.storage_class = config["storage_class"]
         self.api_kwargs = {}
