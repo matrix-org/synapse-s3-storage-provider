@@ -1,12 +1,23 @@
 from setuptools import setup
 
-__version__ = "1.0"
+__version__ = "1.1"
+
+with open("README.md") as f:
+    long_description = f.read()
 
 setup(
     name="synapse-s3-storage-provider",
     version=__version__,
     zip_safe=False,
+    author="matrix.org team and contributors",
+    description="A storage provider which can fetch and store media in Amazon S3.",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     url="https://github.com/matrix-org/synapse-s3-storage-provider",
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: Apache Software License",
+    ],
     py_modules=["s3_storage_provider"],
     scripts=["scripts/s3_media_upload"],
     install_requires=[
