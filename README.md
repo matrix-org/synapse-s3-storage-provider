@@ -76,3 +76,14 @@ Updated 0 as deleted
 > s3_media_upload upload /path/to/media/store matrix_s3_bucket_name --storage-class STANDARD_IA --delete
 # prepare to wait a long time
 ```
+
+Packaging
+---------
+
+For maintainers:
+
+```shell
+python -m build
+twine check dist/*
+twine upload dist/*
+```
