@@ -82,6 +82,9 @@ Packaging
 
 For maintainers:
 
+1. Update the `__version__` in setup.py.
+2. Build, check and upload to PyPI as follows:
+
 ```shell
 python -m build
 twine check dist/*
