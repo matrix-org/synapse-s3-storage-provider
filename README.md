@@ -84,5 +84,5 @@ For maintainers:
 
 1. Update the `__version__` in setup.py. Commit. Push.
 2. Create a release on GitHub for this version.
-3. When published, a [GitHub action](https://github.com/matrix-org/synapse-s3-storage-provider/runs/4312656424?check_suite_focus=true) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
+3. When published, a [GitHub action workflow](https://github.com/matrix-org/synapse-s3-storage-provider/actions/workflows/release.yml) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
 
