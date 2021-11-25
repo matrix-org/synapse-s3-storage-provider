@@ -86,3 +86,4 @@ For maintainers:
 2. Create a release on GitHub for this version.
 3. When published, a [GitHub action](https://github.com/matrix-org/synapse-s3-storage-provider/runs/4312656424?check_suite_focus=true) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
 
+**NB.** `matrix.org` is currently configured to `git checkout` this module directly and does NOT pull from PyPI.
