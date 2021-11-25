@@ -34,7 +34,7 @@ jobs:
     # This is similar to the job in `release.yml`, but it does NOT upload to PyPI.
     # We include it here to reduce the likelihood of someone publishing a release
     # which doesn't build.
-    name: "Build and check package"
+    name: "Build and check Python package"
     runs-on: "ubuntu-latest"
     steps:
       - uses: "actions/checkout@v2"
