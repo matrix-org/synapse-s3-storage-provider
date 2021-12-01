@@ -77,16 +77,12 @@ Updated 0 as deleted
 # prepare to wait a long time
 ```
 
-Packaging
+Packaging and release
 ---------
 
 For maintainers:
 
-1. Update the `__version__` in setup.py.
-2. Build, check and upload to PyPI as follows:
+1. Update the `__version__` in setup.py. Commit. Push.
+2. Create a release on GitHub for this version.
+3. When published, a [GitHub action workflow](https://github.com/matrix-org/synapse-s3-storage-provider/actions/workflows/release.yml) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
 
-```shell
-python -m build
-twine check dist/*
-twine upload dist/*
-```

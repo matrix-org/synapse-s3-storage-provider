@@ -30,6 +30,29 @@ jobs:
       - name: "Run tox lint targets for ${{ matrix.python-version }}"
         run: "python -m tox -e check_isort,pep8,packaging"
 
+  build:
+    # This is similar to the job in `release.yml`, but it does NOT upload to PyPI.
+    # We include it here to reduce the likelihood of someone publishing a release
+    # which doesn't build.
+    name: "Build and check Python package"
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v2"
+
+      - uses: "actions/setup-python@v2"
+        with:
+          python-version: "3.6"
+
+      - name: "Install packaging tools"
+        run: "python -m pip install --upgrade build twine"
+
+      - name: "Build dist package"
+        run: "python -m build"
+
+      - name: "Run twine checks"
+        run: "python -m twine check dist/*"
+
+
   tests:
     needs: lint
     name: "Python ${{ matrix.python-version }}"
@@ -55,3 +78,4 @@ jobs:
           python -m pip install --upgrade tox
       - name: "Run tox targets for ${{ matrix.python-version }}"
         run: "python -m tox -e py"
+
