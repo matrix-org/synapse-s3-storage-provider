@@ -32,7 +32,8 @@ progress = True
 
 
 def parse_duration(string):
-    """Parse a string into a duration supports suffix of d, m or y."""
+    """Parse a string into a duration supports suffix of d, m or y.
+    """
     suffix = string[-1]
     number = string[:-1]
 
@@ -68,7 +69,8 @@ def mark_as_deleted(sqlite_conn, origin, media_id):
 
 
 def get_not_deleted_count(sqlite_conn):
-    """Get count of all rows in our cache that we don't think have been deleted"""
+    """Get count of all rows in our cache that we don't think have been deleted
+    """
     cur = sqlite_conn.cursor()
 
     cur.execute(
@@ -82,7 +84,8 @@ def get_not_deleted_count(sqlite_conn):
 
 
 def get_not_deleted(sqlite_conn):
-    """Get all rows in our cache that we don't think have been deleted"""
+    """Get all rows in our cache that we don't think have been deleted
+    """
     cur = sqlite_conn.cursor()
 
     cur.execute(
@@ -95,7 +98,8 @@ def get_not_deleted(sqlite_conn):
 
 
 def to_path(origin, filesystem_id, m_type):
-    """Get a relative path to the given media"""
+    """Get a relative path to the given media
+    """
     if m_type == "local":
         file_path = os.path.join(
             "local_content", filesystem_id[:2], filesystem_id[2:4], filesystem_id[4:],
@@ -115,7 +119,8 @@ def to_path(origin, filesystem_id, m_type):
 
 
 def to_thumbnail_dir(origin, filesystem_id, m_type):
-    """Get a relative path to the given media's thumbnail directory"""
+    """Get a relative path to the given media's thumbnail directory
+    """
     if m_type == "local":
         thumbnail_path = os.path.join(
             "local_thumbnails",
@@ -138,7 +143,8 @@ def to_thumbnail_dir(origin, filesystem_id, m_type):
 
 
 def get_local_files(base_path, origin, filesystem_id, m_type):
-    """Get a list of relative paths to undeleted files for the given media"""
+    """Get a list of relative paths to undeleted files for the given media
+    """
     local_files = []
 
     original_path = to_path(origin, filesystem_id, m_type)
@@ -162,7 +168,8 @@ def get_local_files(base_path, origin, filesystem_id, m_type):
 
 
 def check_file_in_s3(s3, bucket, key):
-    """Check the file exists in S3 (though it could be different)"""
+    """Check the file exists in S3 (though it could be different)
+    """
     try:
         s3.head_object(Bucket=bucket, Key=key)
     except botocore.exceptions.ClientError as e:
@@ -174,7 +181,8 @@ def check_file_in_s3(s3, bucket, key):
 
 
 def run_write(sqlite_conn, output_file):
-    """Entry point for write command"""
+    """Entry point for write command
+    """
     for origin, _, filesystem_id, m_type in get_not_deleted(sqlite_conn):
         file_path = to_path(origin, filesystem_id, m_type)
         print(file_path, file=output_file)
@@ -186,7 +194,8 @@ def run_write(sqlite_conn, output_file):
 
 
 def run_update_db(synapse_db_conn, sqlite_conn, before_date):
-    """Entry point for update-db command"""
+    """Entry point for update-db command
+    """
 
     local_sql = """
         SELECT '', media_id, media_id
@@ -236,7 +245,8 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
 
 
 def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs):
-    """Process rows extracted from Synapse's database and insert them in cache"""
+    """Process rows extracted from Synapse's database and insert them in cache
+    """
     update_count = 0
 
     for (origin, media_id, filesystem_id) in synapse_db_curs:
@@ -254,7 +264,8 @@ def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs):
 
 
 def run_check_delete(sqlite_conn, base_path):
-    """Entry point for check-deleted command"""
+    """Entry point for check-deleted command
+    """
     deleted = []
     if progress:
         it = tqdm.tqdm(
@@ -284,7 +295,8 @@ def run_check_delete(sqlite_conn, base_path):
 
 
 def run_upload(s3, bucket, sqlite_conn, base_path, should_delete, storage_class):
-    """Entry point for upload command"""
+    """Entry point for upload command
+    """
     total = get_not_deleted_count(sqlite_conn)
 
     uploaded_media = 0
@@ -367,7 +379,8 @@ def run_upload(s3, bucket, sqlite_conn, base_path, should_delete, storage_class)
 
 
 def get_sqlite_conn(parser):
-    """Attempt to get a sqlite connection to cache.db, or exit."""
+    """Attempt to get a sqlite connection to cache.db, or exit.
+    """
     try:
         sqlite_conn = sqlite3.connect("cache.db")
         sqlite_conn.executescript(SCHEMA)
