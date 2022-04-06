@@ -15,7 +15,7 @@ jobs:
       with:
         python-version: "3.x"
     - name: Run synapse
-      uses: michaelkaye/setup-matrix-synapse@v0.4.0
+      uses: michaelkaye/setup-matrix-synapse@v1.0.1
       with: 
         uploadLogs: true
         httpPort: 8008
