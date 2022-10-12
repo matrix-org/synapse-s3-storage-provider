@@ -1,6 +1,6 @@
 from setuptools import setup
 
-__version__ = "1.1"  # Bump to a 3-part semver for next version, i.e. 1.1.1
+__version__ = "1.1.1" 
 
 with open("README.md") as f:
     long_description = f.read()
