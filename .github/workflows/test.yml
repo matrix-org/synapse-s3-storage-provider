@@ -34,12 +34,14 @@ jobs:
                 secret_access_key: my_secret_access_key
     - name: Setup minio
       run: |
+        # The version of minio is RELEASE.2022-04-01T03-41-39Z.fips
         docker run -d -p 9000:9000 --name minio \
                    -e "MINIO_ACCESS_KEY=my_access_key_id" \
                    -e "MINIO_SECRET_KEY=my_secret_access_key" \
                    -v /tmp/data:/data \
                    -v /tmp/config:/root/.minio \
-                   minio/minio server /data
+                   minio/minio@sha256:b615ce0f18c2adf111c31b751cb79b69551b62a620e85930f6b5b28e7265b0c1 \
+                   server /data
         export AWS_ACCESS_KEY_ID=my_access_key_id
         export AWS_SECRET_ACCESS_KEY=my_secret_access_key
         export AWS_EC2_METADATA_DISABLED=true
