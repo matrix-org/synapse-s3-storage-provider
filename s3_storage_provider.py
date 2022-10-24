@@ -62,7 +62,7 @@ class S3StorageProviderBackend(StorageProvider):
     def __init__(self, hs, config):
         self.cache_directory = hs.config.media.media_store_path
         self.bucket = config["bucket"]
-        self.storage_class = config["storage_class"]
+        self.eargs = config["eargs"]
         self.api_kwargs = {}
 
         if "region_name" in config:
@@ -118,11 +118,12 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             with LoggingContext(parent_context=parent_logcontext):
+
                 self._get_s3_client().upload_file(
                     Filename=os.path.join(self.cache_directory, path),
                     Bucket=self.bucket,
                     Key=path,
-                    ExtraArgs={"StorageClass": self.storage_class},
+                    ExtraArgs=self.eargs,
                 )
 
         return make_deferred_yieldable(
@@ -136,7 +137,9 @@ class S3StorageProviderBackend(StorageProvider):
         d = defer.Deferred()
 
         def _get_file():
-            s3_download_task(self._get_s3_client(), self.bucket, path, d, logcontext)
+            s3_download_task(
+                self._get_s3_client(), self.bucket, self.eargs, path, d, logcontext
+            )
 
         self._s3_pool.callInThread(_get_file)
         return make_deferred_yieldable(d)
@@ -158,7 +161,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         result = {
             "bucket": bucket,
-            "storage_class": storage_class,
+            "eargs": {"StorageClass": storage_class},
         }
 
         if "region_name" in config:
@@ -173,10 +176,16 @@ class S3StorageProviderBackend(StorageProvider):
         if "secret_access_key" in config:
             result["secret_access_key"] = config["secret_access_key"]
 
+        if "sse_customer_key" in config:
+            result["eargs"]["SSECustomerKey"] = config["sse_customer_key"]
+            result["eargs"]["SSECustomerAlgorithm"] = config.get(
+                "sse_customer_algo", "AES256"
+            )
+
         return result
 
 
-def s3_download_task(s3_client, bucket, key, deferred, parent_logcontext):
+def s3_download_task(s3_client, bucket, key, eargs, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
@@ -193,9 +202,21 @@ def s3_download_task(s3_client, bucket, key, deferred, parent_logcontext):
         logger.info("Fetching %s from S3", key)
 
         try:
-            resp = s3_client.get_object(Bucket=bucket, Key=key)
+            if eargs["SSECustomerKey"] and eargs["SSECustomerAlgorithm"]:
+                resp = s3_client.get_object(
+                    Bucket=bucket,
+                    Key=key,
+                    SSECustomerKey=eargs["SSECustomerKey"],
+                    SSECustomerAlgorithm=eargs["SSECustomerAlgorithm"],
+                )
+            else:
+                resp = s3_client.get_object(Bucket=bucket, Key=key)
+
         except botocore.exceptions.ClientError as e:
-            if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
+            if e.response["Error"]["Code"] in (
+                "404",
+                "NoSuchKey",
+            ):
                 logger.info("Media %s not found in S3", key)
                 reactor.callFromThread(deferred.callback, None)
                 return
