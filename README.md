@@ -27,9 +27,11 @@ media_storage_providers:
     endpoint_url: <S3_LIKE_SERVICE_ENDPOINT_URL>
     access_key_id: <S3_ACCESS_KEY_ID>
     secret_access_key: <S3_SECRET_ACCESS_KEY>
-    sse_customer_key: <S3_SSEC_KEY>
+
+    # Server Side Encryption for Customer-provided keys
+    #sse_customer_key: <S3_SSEC_KEY>
     # Your SSE-C algorithm is very likely AES256
-    sse_customer_algo: <S3_SSEC_ALGO>
+    #sse_customer_algo: <S3_SSEC_ALGO>
 
     # The object storage class used when uploading files to the bucket.
     # Default is STANDARD.
