@@ -341,7 +341,7 @@ def run_upload(s3, bucket, sqlite_conn, base_path, eargs, should_delete):
                         local_path,
                         bucket,
                         rel_file_path,
-                        ExtraArgs=self.eargs,
+                        ExtraArgs=eargs,
                     )
                 except Exception as e:
                     print("Failed to upload file %s: %s", local_path, e)
