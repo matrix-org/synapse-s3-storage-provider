@@ -138,7 +138,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _get_file():
             s3_download_task(
-                self._get_s3_client(), self.bucket, self.eargs, path, d, logcontext
+                self._get_s3_client(), self.bucket, path, self.eargs, d, logcontext
             )
 
         self._s3_pool.callInThread(_get_file)
