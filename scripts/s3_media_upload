@@ -302,7 +302,7 @@ def run_check_delete(sqlite_conn, base_path):
     print("Updated", len(deleted), "as deleted")
 
 
-def run_upload(s3, bucket, sqlite_conn, base_path, should_delete, storage_class):
+def run_upload(s3, bucket, sqlite_conn, base_path, eargs, should_delete):
     """Entry point for upload command
     """
     total = get_not_deleted_count(sqlite_conn)
@@ -571,8 +571,8 @@ def main():
             args.bucket,
             sqlite_conn,
             args.base_path,
-            should_delete=args.delete,
-            eargs=eargs
+            eargs,
+            should_delete=args.delete
         )
         return
 
