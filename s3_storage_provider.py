@@ -213,10 +213,7 @@ def s3_download_task(s3_client, bucket, key, eargs, deferred, parent_logcontext)
                 resp = s3_client.get_object(Bucket=bucket, Key=key)
 
         except botocore.exceptions.ClientError as e:
-            if e.response["Error"]["Code"] in (
-                "404",
-                "NoSuchKey",
-            ):
+            if e.response["Error"]["Code"] in ("404","NoSuchKey",):
                 logger.info("Media %s not found in S3", key)
                 reactor.callFromThread(deferred.callback, None)
                 return
