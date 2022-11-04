@@ -62,7 +62,7 @@ class S3StorageProviderBackend(StorageProvider):
     def __init__(self, hs, config):
         self.cache_directory = hs.config.media.media_store_path
         self.bucket = config["bucket"]
-        self.eargs = config["eargs"]
+        self.extra_args = config["extra_args"]
         self.api_kwargs = {}
 
         if "region_name" in config:
@@ -123,7 +123,7 @@ class S3StorageProviderBackend(StorageProvider):
                     Filename=os.path.join(self.cache_directory, path),
                     Bucket=self.bucket,
                     Key=path,
-                    ExtraArgs=self.eargs,
+                    ExtraArgs=self.extra_args,
                 )
 
         return make_deferred_yieldable(
@@ -138,7 +138,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _get_file():
             s3_download_task(
-                self._get_s3_client(), self.bucket, path, self.eargs, d, logcontext
+                self._get_s3_client(), self.bucket, path, self.extra_args, d, logcontext
             )
 
         self._s3_pool.callInThread(_get_file)
@@ -161,7 +161,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         result = {
             "bucket": bucket,
-            "eargs": {"StorageClass": storage_class},
+            "extra_args": {"StorageClass": storage_class},
         }
 
         if "region_name" in config:
@@ -177,15 +177,15 @@ class S3StorageProviderBackend(StorageProvider):
             result["secret_access_key"] = config["secret_access_key"]
 
         if "sse_customer_key" in config:
-            result["eargs"]["SSECustomerKey"] = config["sse_customer_key"]
-            result["eargs"]["SSECustomerAlgorithm"] = config.get(
+            result["extra_args"]["SSECustomerKey"] = config["sse_customer_key"]
+            result["extra_args"]["SSECustomerAlgorithm"] = config.get(
                 "sse_customer_algo", "AES256"
             )
 
         return result
 
 
-def s3_download_task(s3_client, bucket, key, eargs, deferred, parent_logcontext):
+def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
@@ -202,12 +202,12 @@ def s3_download_task(s3_client, bucket, key, eargs, deferred, parent_logcontext)
         logger.info("Fetching %s from S3", key)
 
         try:
-            if eargs["SSECustomerKey"] and eargs["SSECustomerAlgorithm"]:
+            if extra_args["SSECustomerKey"] and extra_args["SSECustomerAlgorithm"]:
                 resp = s3_client.get_object(
                     Bucket=bucket,
                     Key=key,
-                    SSECustomerKey=eargs["SSECustomerKey"],
-                    SSECustomerAlgorithm=eargs["SSECustomerAlgorithm"],
+                    SSECustomerKey=extra_args["SSECustomerKey"],
+                    SSECustomerAlgorithm=extra_args["SSECustomerAlgorithm"],
                 )
             else:
                 resp = s3_client.get_object(Bucket=bucket, Key=key)
