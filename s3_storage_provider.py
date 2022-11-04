@@ -62,6 +62,9 @@ class S3StorageProviderBackend(StorageProvider):
     def __init__(self, hs, config):
         self.cache_directory = hs.config.media.media_store_path
         self.bucket = config["bucket"]
+        # A dictionary of extra arguments for uploading files.
+        # See https://boto3.amazonaws.com/v1/documentation/api/latest/reference/customizations/s3.html#boto3.s3.transfer.S3Transfer.ALLOWED_UPLOAD_ARGS
+        # for a list of possible keys.
         self.extra_args = config["extra_args"]
         self.api_kwargs = {}
 
