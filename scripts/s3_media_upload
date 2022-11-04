@@ -508,7 +508,6 @@ def main():
     upload_parser.add_argument(
         "--sse-customer-algo",
         help="Algorithm for SSE-C, only used if sse-customer-key is also specified",
-        nargs="?",
         default="AES256",
     )
 
