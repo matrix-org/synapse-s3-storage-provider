@@ -31,6 +31,7 @@ media_storage_providers:
     # Server Side Encryption for Customer-provided keys
     #sse_customer_key: <S3_SSEC_KEY>
     # Your SSE-C algorithm is very likely AES256
+    # Default is AES256.
     #sse_customer_algo: <S3_SSEC_ALGO>
 
     # The object storage class used when uploading files to the bucket.
