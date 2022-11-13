@@ -205,7 +205,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcon
         logger.info("Fetching %s from S3", key)
 
         try:
-            if extra_args["SSECustomerKey"] and extra_args["SSECustomerAlgorithm"]:
+            if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
                 resp = s3_client.get_object(
                     Bucket=bucket,
                     Key=key,
