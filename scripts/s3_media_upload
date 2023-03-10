@@ -400,7 +400,8 @@ def get_homeserver_db_conn(parser):
     """
 
     try:
-        homeserver_yaml = yaml.safe_load(open("homeserver.yaml"))
+        with open("homeserver.yaml") as f:
+            homeserver_yaml = yaml.safe_load(f)
     except FileNotFoundError:
         parser.error("Could not find homeserver.yaml")
     except yaml.YAMLError as e:
@@ -431,7 +432,8 @@ def get_database_db_conn(parser):
     """
 
     try:
-        database_yaml = yaml.safe_load(open("database.yaml"))
+        with open("database.yaml") as f:
+            database_yaml = yaml.safe_load(f)
     except FileNotFoundError:
         parser.error("Could not find database.yaml")
     except yaml.YAMLError as e:
