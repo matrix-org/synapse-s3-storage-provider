@@ -125,8 +125,7 @@ class StreamingProducerTestCase(unittest.TestCase):
         self.body.error(excp)
         self.wait_for_thread()
 
-        self.assertTrue(deferred.called)
-        self.assertIsInstance(deferred.result, Failure)
+        self.failureResultOf(deferred, Exception)
 
     def wait_for_thread(self):
         """Wait for something to call `callFromThread` and advance reactor
