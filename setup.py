@@ -25,7 +25,7 @@ setup(
         "botocore>=1.12.23,<2.0",
         "humanize>=0.5.1,<0.6",
         "psycopg2>=2.7.5,<3.0",
-        "PyYAML>=5.4,<6.0",
+        "PyYAML>=5.4,<7.0",
         "tqdm>=4.26.0,<5.0",
         "Twisted",
     ],
