@@ -79,6 +79,9 @@ class S3StorageProviderBackend(StorageProvider):
 
         if "secret_access_key" in config:
             self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
+        
+        if "verify" in config:
+            self.api_kwargs["verify"]=config["verify"]
 
         self._s3_client = None
         self._s3_client_lock = threading.Lock()
@@ -178,6 +181,9 @@ class S3StorageProviderBackend(StorageProvider):
 
         if "secret_access_key" in config:
             result["secret_access_key"] = config["secret_access_key"]
+
+        if "verify" in config:
+            result["verify"]=config["verify"]
 
         if "sse_customer_key" in config:
             result["extra_args"]["SSECustomerKey"] = config["sse_customer_key"]
