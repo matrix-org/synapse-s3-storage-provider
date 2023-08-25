@@ -27,6 +27,8 @@ setup(
         "psycopg2>=2.7.5,<3.0",
         "PyYAML>=5.4,<7.0",
         "tqdm>=4.26.0,<5.0",
+        "cryptography>=2.5.0",
+        "aws-encryption-sdk>=3.1.1",
         "Twisted",
     ],
 )
