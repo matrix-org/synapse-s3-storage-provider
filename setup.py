@@ -19,6 +19,7 @@ setup(
         "License :: OSI Approved :: Apache Software License",
     ],
     py_modules=["s3_storage_provider"],
+    packages=["encryption"],
     scripts=["scripts/s3_media_upload"],
     install_requires=[
         "boto3>=1.9.23,<2.0",
@@ -27,6 +28,8 @@ setup(
         "psycopg2>=2.7.5,<3.0",
         "PyYAML>=5.4,<7.0",
         "tqdm>=4.26.0,<5.0",
+        "cryptography>=2.5.0",
+        "aws-encryption-sdk>=3.1.1",
         "Twisted",
     ],
 )

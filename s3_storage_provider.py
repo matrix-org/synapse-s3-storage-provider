@@ -31,6 +31,8 @@ from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
+from encryption.client_side_encryption import ClientSideEncryption
+
 # Synapse 1.13.0 moved current_context to a module-level function.
 try:
     from synapse.logging.context import current_context
@@ -87,6 +89,10 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
         self._s3_pool.start()
 
+        self._cse_client = None
+        if "cse_master_key" in config:
+            self._cse_client = ClientSideEncryption(config["cse_master_key"])
+
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
         # to exit.
@@ -121,17 +127,31 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             with LoggingContext(parent_context=parent_logcontext):
-
-                self._get_s3_client().upload_file(
-                    Filename=os.path.join(self.cache_directory, path),
-                    Bucket=self.bucket,
-                    Key=path,
-                    ExtraArgs=self.extra_args,
-                )
+                if self._cse_client:
+                    self.store_with_client_side_encryption(path)
+                else:
+                    self._get_s3_client().upload_file(
+                        Filename=os.path.join(self.cache_directory, path),
+                        Bucket=self.bucket,
+                        Key=path,
+                        ExtraArgs=self.extra_args,
+                    )
 
         return make_deferred_yieldable(
             threads.deferToThreadPool(reactor, self._s3_pool, _store_file)
         )
+    
+    def store_with_client_side_encryption(self, path):
+        s3_client = self._get_s3_client()
+        file_name = os.path.join(self.cache_directory, path)
+        with open(file_name, 'rb') as file:
+            with self._cse_client.encrypt(file) as encryptor:
+                s3_client.upload_fileobj(
+                    Fileobj=encryptor, 
+                    Bucket=self.bucket, 
+                    Key=path,
+                    ExtraArgs=self.extra_args)
+
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
@@ -141,7 +161,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _get_file():
             s3_download_task(
-                self._get_s3_client(), self.bucket, path, self.extra_args, d, logcontext
+                self, self.bucket, path, self.extra_args, d, logcontext
             )
 
         self._s3_pool.callInThread(_get_file)
@@ -184,11 +204,14 @@ class S3StorageProviderBackend(StorageProvider):
             result["extra_args"]["SSECustomerAlgorithm"] = config.get(
                 "sse_customer_algo", "AES256"
             )
+    
+        if "cse_master_key" in config:
+            result["cse_master_key"] = config["cse_master_key"]
 
         return result
 
 
-def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcontext):
+def s3_download_task(s3, bucket, key, extra_args, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
@@ -204,6 +227,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcon
     with LoggingContext(parent_context=parent_logcontext):
         logger.info("Fetching %s from S3", key)
 
+        s3_client = s3._get_s3_client()
         try:
             if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
                 resp = s3_client.get_object(
@@ -226,10 +250,10 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcon
 
         producer = _S3Responder()
         reactor.callFromThread(deferred.callback, producer)
-        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.0)
+        _stream_to_producer(reactor, producer, resp["Body"], s3, timeout=90.0)
 
 
-def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
+def _stream_to_producer(reactor, producer, body, s3, status=None, timeout=None):
     """Streams a file like object to the producer.
 
     Correctly handles producer being paused/resumed/stopped.
@@ -244,19 +268,59 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
             after being paused
     """
 
+    if not status:
+        status = _ProducerStatus()
+
+    try:
+        if s3._cse_client:
+            stream_body_with_cse(body, producer, reactor, s3, timeout, status)
+        else:
+            stream_body(body, producer, reactor, status, timeout)
+    except Exception:
+        reactor.callFromThread(producer._error, Failure())
+    finally:
+        reactor.callFromThread(producer._finish)
+        if body:
+            body.close()
+
+def stream_body(body, producer, reactor, status, timeout):
     # Set when we should be producing, cleared when we are paused
     wakeup_event = producer.wakeup_event
-
     # Set if we should stop producing forever
     stop_event = producer.stop_event
 
     if not status:
         status = _ProducerStatus()
+    while not stop_event.is_set():
+        # We wait for the producer to signal that the consumer wants
+        # more data (or we should abort)
+        if not wakeup_event.is_set():
+            status.set_paused(True)
+            ret = wakeup_event.wait(timeout)
+            if not ret:
+                raise Exception("Timed out waiting to resume")
+            status.set_paused(False)
 
-    try:
-        while not stop_event.is_set():
+        # Check if we were woken up so that we abort the download
+        if stop_event.is_set():
+            return
+
+        chunk = body.read(READ_CHUNK_SIZE)
+        if not chunk:
+            return
+
+        reactor.callFromThread(producer._write, chunk)
+
+def stream_body_with_cse(body, producer, reactor, s3, timeout, status):
+    # Set when we should be producing, cleared when we are paused
+    wakeup_event = producer.wakeup_event
+    # Set if we should stop producing forever
+    stop_event = producer.stop_event
+    with s3._cse_client.decrypt(body) as decryptor:
+        for chunk in decryptor:
             # We wait for the producer to signal that the consumer wants
             # more data (or we should abort)
+
             if not wakeup_event.is_set():
                 status.set_paused(True)
                 ret = wakeup_event.wait(timeout)
@@ -268,18 +332,7 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
             if stop_event.is_set():
                 return
 
-            chunk = body.read(READ_CHUNK_SIZE)
-            if not chunk:
-                return
-
             reactor.callFromThread(producer._write, chunk)
-
-    except Exception:
-        reactor.callFromThread(producer._error, Failure())
-    finally:
-        reactor.callFromThread(producer._finish)
-        if body:
-            body.close()
 
 
 class _S3Responder(Responder):
