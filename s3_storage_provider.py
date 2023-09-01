@@ -31,6 +31,8 @@ from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
+from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
+
 # Synapse 1.13.0 moved current_context to a module-level function.
 try:
     from synapse.logging.context import current_context
@@ -86,6 +88,8 @@ class S3StorageProviderBackend(StorageProvider):
         threadpool_size = config.get("threadpool_size", 40)
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
         self._s3_pool.start()
+
+        self._cse_key = config.get("cse_key")
 
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
@@ -184,6 +188,9 @@ class S3StorageProviderBackend(StorageProvider):
             result["extra_args"]["SSECustomerAlgorithm"] = config.get(
                 "sse_customer_algo", "AES256"
             )
+    
+        if "cse_key" in config:
+            result
 
         return result
 
@@ -382,3 +389,14 @@ class _ProducerStatus(object):
             self.is_paused.set()
         else:
             self.is_paused.clear()
+
+class StaticClientKeyProvider(RawMasterKeyProvider):
+    provider_id = "static-client"
+
+    def _get_raw_key(self, key_id):
+        static_key = "abcdefg"
+        return WrappingKey(
+            wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
+            wrapping_key=static_key,
+            wrapping_key_type=EncryptionKeyType.SYMMETRIC,
+        )
