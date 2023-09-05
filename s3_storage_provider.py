@@ -31,8 +31,6 @@ from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
-from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
-
 # Synapse 1.13.0 moved current_context to a module-level function.
 try:
     from synapse.logging.context import current_context
@@ -389,14 +387,3 @@ class _ProducerStatus(object):
             self.is_paused.set()
         else:
             self.is_paused.clear()
-
-class StaticClientKeyProvider(RawMasterKeyProvider):
-    provider_id = "static-client"
-
-    def _get_raw_key(self, key_id):
-        static_key = "abcdefg"
-        return WrappingKey(
-            wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
-            wrapping_key=static_key,
-            wrapping_key_type=EncryptionKeyType.SYMMETRIC,
-        )
