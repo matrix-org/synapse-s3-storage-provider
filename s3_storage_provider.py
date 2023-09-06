@@ -87,6 +87,8 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
         self._s3_pool.start()
 
+        self._cse_key = config.get("cse_key")
+
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
         # to exit.
@@ -184,6 +186,9 @@ class S3StorageProviderBackend(StorageProvider):
             result["extra_args"]["SSECustomerAlgorithm"] = config.get(
                 "sse_customer_algo", "AES256"
             )
+    
+        if "cse_key" in config:
+            result
 
         return result
 

@@ -34,6 +34,9 @@ media_storage_providers:
     # Default is AES256.
     #sse_customer_algo: <S3_SSEC_ALGO>
 
+    # Client Side Encryption
+    #cse_key: <CSE_KEY>
+
     # The object storage class used when uploading files to the bucket.
     # Default is STANDARD.
     #storage_class: "STANDARD_IA"
