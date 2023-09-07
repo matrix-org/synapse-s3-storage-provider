@@ -397,7 +397,7 @@ class FixedKeyProvider(RawMasterKeyProvider):
     provider_id = "fixed"
 
     def set_master_key(self, master_key):
-        self.master_key = hashlib.sha256(key.encode("utf-8")).digest()
+        self.master_key = hashlib.sha256(master_key.encode("utf-8")).digest()
         self.add_master_key('')
 
     def _get_raw_key(self, key_id):
