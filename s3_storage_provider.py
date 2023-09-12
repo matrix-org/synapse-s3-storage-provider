@@ -169,7 +169,6 @@ class S3StorageProviderBackend(StorageProvider):
         self.key_provider = FixedKeyProvider()
         self.key_provider.set_key(self._cse_master_key)
 
-
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
         logcontext = current_context()
@@ -284,19 +283,61 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
             after being paused
     """
 
+    if not status:
+        status = _ProducerStatus()
+
+    try:
+        stream_body(body, producer, reactor, status, timeout)
+    except Exception:
+        reactor.callFromThread(producer._error, Failure())
+    finally:
+        reactor.callFromThread(producer._finish)
+        if body:
+            body.close()
+
+def stream_body(body, producer, reactor, status, timeout):
     # Set when we should be producing, cleared when we are paused
     wakeup_event = producer.wakeup_event
-
     # Set if we should stop producing forever
     stop_event = producer.stop_event
 
     if not status:
         status = _ProducerStatus()
+    while not stop_event.is_set():
+        # We wait for the producer to signal that the consumer wants
+        # more data (or we should abort)
+        if not wakeup_event.is_set():
+            status.set_paused(True)
+            ret = wakeup_event.wait(timeout)
+            if not ret:
+                raise Exception("Timed out waiting to resume")
+            status.set_paused(False)
 
-    try:
-        while not stop_event.is_set():
+        # Check if we were woken up so that we abort the download
+        if stop_event.is_set():
+            return
+
+        chunk = body.read(READ_CHUNK_SIZE)
+        if not chunk:
+            return
+
+        reactor.callFromThread(producer._write, chunk)
+
+def stream_body_with_cse(body, producer, reactor, s3, timeout, status):
+    # Set when we should be producing, cleared when we are paused
+    wakeup_event = producer.wakeup_event
+    # Set if we should stop producing forever
+    stop_event = producer.stop_event
+
+    with s3.aws_encryption_client.stream(
+            mode='d',
+            source=body,
+            key_provider=s3.client_side_key_provider()
+    ) as decryptor:
+        for chunk in decryptor:
             # We wait for the producer to signal that the consumer wants
             # more data (or we should abort)
+
             if not wakeup_event.is_set():
                 status.set_paused(True)
                 ret = wakeup_event.wait(timeout)
@@ -308,18 +349,7 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
             if stop_event.is_set():
                 return
 
-            chunk = body.read(READ_CHUNK_SIZE)
-            if not chunk:
-                return
-
             reactor.callFromThread(producer._write, chunk)
-
-    except Exception:
-        reactor.callFromThread(producer._error, Failure())
-    finally:
-        reactor.callFromThread(producer._finish)
-        if body:
-            body.close()
 
 
 class _S3Responder(Responder):
