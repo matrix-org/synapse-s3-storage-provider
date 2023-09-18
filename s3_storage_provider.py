@@ -31,11 +31,7 @@ from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
-import hashlib
-import aws_encryption_sdk
-from aws_encryption_sdk.identifiers import EncryptionKeyType, WrappingAlgorithm, CommitmentPolicy
-from aws_encryption_sdk.internal.crypto.wrapping_keys import WrappingKey
-from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
+from encryption.client_side_encryption import ClientSideEncryption
 
 # Synapse 1.13.0 moved current_context to a module-level function.
 try:
@@ -94,9 +90,7 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_pool.start()
 
         if "cse_master_key" in config:
-            self._cse_client = None
-            self._key_provider = None
-            self._cse_master_key = config["cse_master_key"]
+            self._cse_client = ClientSideEncryption(config["cse_master_key"])
 
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
@@ -151,28 +145,13 @@ class S3StorageProviderBackend(StorageProvider):
         s3_client = self._get_s3_client()
         file_name = os.path.join(self.cache_directory, path)
         with open(file_name, 'rb') as file:
-            with client.stream(
-              mode='e',
-              source=file,
-              key_provider=self.client_side_key_provider()
-            ) as encryptor:
+            with self._cse_client.encrypt(file) as encryptor:
                 s3_client.upload_fileobj(
                     Fileobj=encryptor, 
                     Bucket=self.bucket, 
                     Key=path,
                     ExtraArgs=self.extra_args)
 
-    def aws_encryption_client(self):
-        if self._cse_client:
-            return self._cse_client
-        self._cse_client = aws_encryption_sdk.EncryptionSDKClient(commitment_policy=CommitmentPolicy.FORBID_ENCRYPT_ALLOW_DECRYPT)
-        return self._cse_client
-
-    def client_side_key_provider(self):
-        if self._key_provider: return self._key_provider
-        self._key_provider = FixedKeyProvider()
-        self._key_provider.set_master_key(self._cse_master_key)
-        return self._key_provider
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
@@ -337,12 +316,7 @@ def stream_body_with_cse(body, producer, reactor, s3, timeout, status):
     wakeup_event = producer.wakeup_event
     # Set if we should stop producing forever
     stop_event = producer.stop_event
-
-    with s3.aws_encryption_client().stream(
-            mode='d',
-            source=body,
-            key_provider=s3.client_side_key_provider()
-    ) as decryptor:
+    with s3._cse_client.decrypt(body) as decryptor:
         for chunk in decryptor:
             # We wait for the producer to signal that the consumer wants
             # more data (or we should abort)
@@ -461,17 +435,3 @@ class _ProducerStatus(object):
             self.is_paused.set()
         else:
             self.is_paused.clear()
-
-class FixedKeyProvider(RawMasterKeyProvider):
-    provider_id = "fixed"
-
-    def set_master_key(self, master_key):
-        self.master_key = hashlib.sha256(master_key.encode("utf-8")).digest()
-        self.add_master_key('')
-
-    def _get_raw_key(self, key_id):
-        return WrappingKey(
-            wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
-            wrapping_key=self.master_key,
-            wrapping_key_type=EncryptionKeyType.SYMMETRIC,
-        )
