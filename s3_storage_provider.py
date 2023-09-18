@@ -141,7 +141,6 @@ class S3StorageProviderBackend(StorageProvider):
         )
     
     def store_with_client_side_encryption(self, path):
-        client = self.aws_encryption_client()
         s3_client = self._get_s3_client()
         file_name = os.path.join(self.cache_directory, path)
         with open(file_name, 'rb') as file:

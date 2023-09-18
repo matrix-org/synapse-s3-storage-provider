@@ -8,8 +8,7 @@ class ClientSideEncryption():
     def __init__(self, master_key):
         self._key_provider = FixedKeyProvider()
         self._key_provider.set_master_key(master_key)
-
-        self._encryption_client
+        self._encryption_client = aws_encryption_sdk.EncryptionSDKClient(commitment_policy=CommitmentPolicy.FORBID_ENCRYPT_ALLOW_DECRYPT)
 
     def decrypt(self, source):
         return self._encryption_client.stream(
