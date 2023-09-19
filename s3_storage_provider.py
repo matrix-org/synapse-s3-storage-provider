@@ -89,6 +89,7 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
         self._s3_pool.start()
 
+        self._cse_client = None
         if "cse_master_key" in config:
             self._cse_client = ClientSideEncryption(config["cse_master_key"])
 
@@ -126,7 +127,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             with LoggingContext(parent_context=parent_logcontext):
-                if self._cse_master_key:
+                if self._cse_client:
                     self.store_with_client_side_encryption(path)
                 else:
                     self._get_s3_client().upload_file(
@@ -271,7 +272,7 @@ def _stream_to_producer(reactor, producer, body, s3, status=None, timeout=None):
         status = _ProducerStatus()
 
     try:
-        if s3._cse_master_key:
+        if s3._cse_client:
             stream_body_with_cse(body, producer, reactor, s3, timeout, status)
         else:
             stream_body(body, producer, reactor, status, timeout)
