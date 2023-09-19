@@ -93,7 +93,10 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
         self._s3_pool.start()
 
-        self._cse_master_key = config["cse_master_key"]
+        if "cse_master_key" in config:
+            self._cse_client = None
+            self._key_provider = None
+            self._cse_master_key = config["cse_master_key"]
 
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
@@ -129,12 +132,15 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             with LoggingContext(parent_context=parent_logcontext):
-                self._get_s3_client().upload_file(
-                    Filename=os.path.join(self.cache_directory, path),
-                    Bucket=self.bucket,
-                    Key=path,
-                    ExtraArgs=self.extra_args,
-                )
+                if self._cse_master_key:
+                    self.store_with_client_side_encryption(path)
+                else:
+                    self._get_s3_client().upload_file(
+                        Filename=os.path.join(self.cache_directory, path),
+                        Bucket=self.bucket,
+                        Key=path,
+                        ExtraArgs=self.extra_args,
+                    )
 
         return make_deferred_yieldable(
             threads.deferToThreadPool(reactor, self._s3_pool, _store_file)
@@ -143,31 +149,30 @@ class S3StorageProviderBackend(StorageProvider):
     def store_with_client_side_encryption(self, path):
         client = self.aws_encryption_client()
         s3_client = self._get_s3_client()
-        file_name = os.path.join(self.cache_directory, path),
+        file_name = os.path.join(self.cache_directory, path)
         with open(file_name, 'rb') as file:
             with client.stream(
               mode='e',
               source=file,
               key_provider=self.client_side_key_provider()
             ) as encryptor:
-                for chunk in encryptor:
-                    s3_client.upload_fileobj(
-                        Fileobj=chunk, 
-                        Bucket=self.bucket, 
-                        Key=path,
-                        ExtraArgs=self.extra_args)
+                s3_client.upload_fileobj(
+                    Fileobj=encryptor, 
+                    Bucket=self.bucket, 
+                    Key=path,
+                    ExtraArgs=self.extra_args)
 
     def aws_encryption_client(self):
-        client = self.aws_encryption_client
-        if client:
-            return client
-        self.aws_encryption_client = aws_encryption_sdk.EncryptionSDKClient(commitment_policy=CommitmentPolicy.FORBID_ENCRYPT_ALLOW_DECRYPT)
-        return self.aws_encryption_client
+        if self._cse_client:
+            return self._cse_client
+        self._cse_client = aws_encryption_sdk.EncryptionSDKClient(commitment_policy=CommitmentPolicy.FORBID_ENCRYPT_ALLOW_DECRYPT)
+        return self._cse_client
 
     def client_side_key_provider(self):
-        if self.key_provider: return self.key_provider
-        self.key_provider = FixedKeyProvider()
-        self.key_provider.set_key(self._cse_master_key)
+        if self._key_provider: return self._key_provider
+        self._key_provider = FixedKeyProvider()
+        self._key_provider.set_master_key(self._cse_master_key)
+        return self._key_provider
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
@@ -177,7 +182,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _get_file():
             s3_download_task(
-                self._get_s3_client(), self.bucket, path, self.extra_args, d, logcontext
+                self, self.bucket, path, self.extra_args, d, logcontext
             )
 
         self._s3_pool.callInThread(_get_file)
@@ -222,12 +227,12 @@ class S3StorageProviderBackend(StorageProvider):
             )
     
         if "cse_master_key" in config:
-            result['cse_master_key'] = config["cse_master_key"]
+            result["cse_master_key"] = config["cse_master_key"]
 
         return result
 
 
-def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcontext):
+def s3_download_task(s3, bucket, key, extra_args, deferred, parent_logcontext):
     """Attempts to download a file from S3.
 
     Args:
@@ -243,6 +248,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcon
     with LoggingContext(parent_context=parent_logcontext):
         logger.info("Fetching %s from S3", key)
 
+        s3_client = s3._get_s3_client()
         try:
             if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
                 resp = s3_client.get_object(
@@ -265,10 +271,10 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred, parent_logcon
 
         producer = _S3Responder()
         reactor.callFromThread(deferred.callback, producer)
-        _stream_to_producer(reactor, producer, resp["Body"], timeout=90.0)
+        _stream_to_producer(reactor, producer, resp["Body"], s3, timeout=90.0)
 
 
-def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
+def _stream_to_producer(reactor, producer, body, s3, status=None, timeout=None):
     """Streams a file like object to the producer.
 
     Correctly handles producer being paused/resumed/stopped.
@@ -287,7 +293,10 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
         status = _ProducerStatus()
 
     try:
-        stream_body(body, producer, reactor, status, timeout)
+        if s3._cse_master_key:
+            stream_body_with_cse(body, producer, reactor, s3, timeout, status)
+        else:
+            stream_body(body, producer, reactor, status, timeout)
     except Exception:
         reactor.callFromThread(producer._error, Failure())
     finally:
@@ -329,7 +338,7 @@ def stream_body_with_cse(body, producer, reactor, s3, timeout, status):
     # Set if we should stop producing forever
     stop_event = producer.stop_event
 
-    with s3.aws_encryption_client.stream(
+    with s3.aws_encryption_client().stream(
             mode='d',
             source=body,
             key_provider=s3.client_side_key_provider()
