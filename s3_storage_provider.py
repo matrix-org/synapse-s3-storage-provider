@@ -33,7 +33,7 @@ from synapse.rest.media.v1.storage_provider import StorageProvider
 
 import hashlib
 import aws_encryption_sdk
-from aws_encryption_sdk.identifiers import EncryptionKeyType, WrappingAlgorithm
+from aws_encryption_sdk.identifiers import EncryptionKeyType, WrappingAlgorithm, CommitmentPolicy
 from aws_encryption_sdk.internal.crypto.wrapping_keys import WrappingKey
 from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
 
@@ -139,6 +139,36 @@ class S3StorageProviderBackend(StorageProvider):
         return make_deferred_yieldable(
             threads.deferToThreadPool(reactor, self._s3_pool, _store_file)
         )
+    
+    def store_with_client_side_encryption(self, path):
+        client = self.aws_encryption_client()
+        s3_client = self._get_s3_client()
+        file_name = os.path.join(self.cache_directory, path),
+        with open(file_name, 'rb') as file:
+            with client.stream(
+              mode='e',
+              source=file,
+              key_provider=self.client_side_key_provider()
+            ) as encryptor:
+                for chunk in encryptor:
+                    s3_client.upload_fileobj(
+                        Fileobj=chunk, 
+                        Bucket=self.bucket, 
+                        Key=path,
+                        ExtraArgs=self.extra_args)
+
+    def aws_encryption_client(self):
+        client = self.aws_encryption_client
+        if client:
+            return client
+        self.aws_encryption_client = aws_encryption_sdk.EncryptionSDKClient(commitment_policy=CommitmentPolicy.FORBID_ENCRYPT_ALLOW_DECRYPT)
+        return self.aws_encryption_client
+
+    def client_side_key_provider(self):
+        if self.key_provider: return self.key_provider
+        self.key_provider = FixedKeyProvider()
+        self.key_provider.set_key(self._cse_master_key)
+
 
     def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
