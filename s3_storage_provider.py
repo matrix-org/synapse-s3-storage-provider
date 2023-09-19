@@ -31,6 +31,12 @@ from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
+import hashlib
+import aws_encryption_sdk
+from aws_encryption_sdk.identifiers import EncryptionKeyType, WrappingAlgorithm
+from aws_encryption_sdk.internal.crypto.wrapping_keys import WrappingKey
+from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
+
 # Synapse 1.13.0 moved current_context to a module-level function.
 try:
     from synapse.logging.context import current_context
@@ -87,7 +93,7 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
         self._s3_pool.start()
 
-        self._cse_key = config.get("cse_key")
+        self._cse_master_key = config["cse_master_key"]
 
         # Manually stop the thread pool on shutdown. If we don't do this then
         # stopping Synapse takes an extra ~30s as Python waits for the threads
@@ -123,7 +129,6 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             with LoggingContext(parent_context=parent_logcontext):
-
                 self._get_s3_client().upload_file(
                     Filename=os.path.join(self.cache_directory, path),
                     Bucket=self.bucket,
@@ -187,8 +192,8 @@ class S3StorageProviderBackend(StorageProvider):
                 "sse_customer_algo", "AES256"
             )
     
-        if "cse_key" in config:
-            result
+        if "cse_master_key" in config:
+            result['cse_master_key'] = config["cse_master_key"]
 
         return result
 
@@ -387,3 +392,17 @@ class _ProducerStatus(object):
             self.is_paused.set()
         else:
             self.is_paused.clear()
+
+class FixedKeyProvider(RawMasterKeyProvider):
+    provider_id = "fixed"
+
+    def set_master_key(self, master_key):
+        self.master_key = hashlib.sha256(master_key.encode("utf-8")).digest()
+        self.add_master_key('')
+
+    def _get_raw_key(self, key_id):
+        return WrappingKey(
+            wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
+            wrapping_key=self.master_key,
+            wrapping_key_type=EncryptionKeyType.SYMMETRIC,
+        )
