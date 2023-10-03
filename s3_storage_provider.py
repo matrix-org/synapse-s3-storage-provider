@@ -308,8 +308,6 @@ def stream_body(body, producer, reactor, status, timeout):
     # Set if we should stop producing forever
     stop_event = producer.stop_event
 
-    if not status:
-        status = _ProducerStatus()
     while not stop_event.is_set():
         # We wait for the producer to signal that the consumer wants
         # more data (or we should abort)
