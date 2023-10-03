@@ -19,7 +19,6 @@ setup(
         "License :: OSI Approved :: Apache Software License",
     ],
     py_modules=["s3_storage_provider"],
-    packages=["encryption"],
     scripts=["scripts/s3_media_upload"],
     install_requires=[
         "boto3>=1.9.23,<2.0",

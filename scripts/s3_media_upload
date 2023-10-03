@@ -3,6 +3,7 @@ import argparse
 import datetime
 import os
 import sqlite3
+import sys
 
 import boto3
 import botocore
@@ -11,10 +12,8 @@ import psycopg2
 import tqdm
 import yaml
 
-import sys
 sys.path.append(os.path.join(sys.path[0], '../'))
 from encryption.client_side_encryption import ClientSideEncryption
-
 
 # Schema for our sqlite database cache
 SCHEMA = """

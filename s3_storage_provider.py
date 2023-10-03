@@ -14,14 +14,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import logging
 import os
 import threading
 
 from six import string_types
 
+import aws_encryption_sdk
 import boto3
 import botocore
+from aws_encryption_sdk.identifiers import (
+    CommitmentPolicy,
+    EncryptionKeyType,
+    WrappingAlgorithm,
+)
+from aws_encryption_sdk.internal.crypto.wrapping_keys import WrappingKey
+from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
 
 from twisted.internet import defer, reactor, threads
 from twisted.python.failure import Failure
@@ -30,8 +39,6 @@ from twisted.python.threadpool import ThreadPool
 from synapse.logging.context import LoggingContext, make_deferred_yieldable
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
-
-from encryption.client_side_encryption import ClientSideEncryption
 
 # Synapse 1.13.0 moved current_context to a module-level function.
 try:
@@ -262,6 +269,7 @@ def _stream_to_producer(reactor, producer, body, s3, status=None, timeout=None):
         reactor
         producer (_S3Responder): Producer object to stream results to
         body (file like): The object to read from
+        s3 (S3StorageProviderBackend): The object to use for client-side encryption 
         status (_ProducerStatus|None): Used to track whether we're currently
             paused or not. Used for testing
         timeout (float|None): Timeout in seconds to wait for consume to resume
@@ -284,6 +292,17 @@ def _stream_to_producer(reactor, producer, body, s3, status=None, timeout=None):
             body.close()
 
 def stream_body(body, producer, reactor, status, timeout):
+    """Stream body to client
+    
+    Args:
+        body (file like): The object to read from
+        producer (_S3Responder): Producer object to stream results to
+        reactor
+        status (_ProducerStatus|None): Used to track whether we're currently
+            paused or not. Used for testing
+        timeout (float|None): Timeout in seconds to wait for consume to resume
+            after being paused
+    """
     # Set when we should be producing, cleared when we are paused
     wakeup_event = producer.wakeup_event
     # Set if we should stop producing forever
@@ -312,6 +331,18 @@ def stream_body(body, producer, reactor, status, timeout):
         reactor.callFromThread(producer._write, chunk)
 
 def stream_body_with_cse(body, producer, reactor, s3, timeout, status):
+    """Stream body with client-side encryption logic
+
+    Args:
+        body (file like): The object to read from
+        producer (_S3Responder): Producer object to stream results to
+        reactor
+        s3 (S3StorageProviderBackend): The object to use for client-side encryption 
+        status (_ProducerStatus|None): Used to track whether we're currently
+            paused or not. Used for testing
+        timeout (float|None): Timeout in seconds to wait for consume to resume
+            after being paused
+    """
     # Set when we should be producing, cleared when we are paused
     wakeup_event = producer.wakeup_event
     # Set if we should stop producing forever
@@ -435,3 +466,37 @@ class _ProducerStatus(object):
             self.is_paused.set()
         else:
             self.is_paused.clear()
+
+class ClientSideEncryption():
+    def __init__(self, master_key):
+        self._key_provider = FixedKeyProvider()
+        self._key_provider.set_master_key(master_key)
+        self._encryption_client = aws_encryption_sdk.EncryptionSDKClient(commitment_policy=CommitmentPolicy.FORBID_ENCRYPT_ALLOW_DECRYPT)
+
+    def decrypt(self, source):
+        return self._encryption_client.stream(
+            mode='d',
+            source=source,
+            key_provider=self._key_provider
+        )
+
+    def encrypt(self, source):
+        return self._encryption_client.stream(
+              mode='e',
+              source=source,
+              key_provider=self._key_provider
+        )
+
+class FixedKeyProvider(RawMasterKeyProvider):
+    provider_id = "fixed"
+
+    def set_master_key(self, master_key):
+        self.master_key = hashlib.sha256(master_key.encode("utf-8")).digest()
+        self.add_master_key('')
+
+    def _get_raw_key(self, key_id):
+        return WrappingKey(
+            wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
+            wrapping_key=self.master_key,
+            wrapping_key_type=EncryptionKeyType.SYMMETRIC,
+        )
