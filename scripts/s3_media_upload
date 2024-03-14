@@ -395,18 +395,18 @@ def get_sqlite_conn(parser):
 
     return sqlite_conn
 
-def get_homeserver_db_conn(parser):
-    """Attempt to get a connection based on homeserver.yaml to Synapse's
+def get_homeserver_db_conn(parser, homeserver_config_path):
+    """Attempt to get a connection based on the provided YAML path to Synapse's
     database, or exit.
     """
 
     try:
-        with open("homeserver.yaml") as f:
+        with open(homeserver_config_path) as f:
             homeserver_yaml = yaml.safe_load(f)
     except FileNotFoundError:
-        parser.error("Could not find homeserver.yaml")
+        parser.error("Could not find %s" % (homeserver_config_path,))
     except yaml.YAMLError as e:
-        parser.error("homeserver.yaml is not valid yaml: %s" % (e,))
+        parser.error("%s is not valid yaml: %s" % (homeserver_config_path, e,))
 
     try:
         database_name = homeserver_yaml["database"]["name"]
@@ -454,7 +454,7 @@ def get_database_db_conn(parser):
 
     return synapse_db_conn
 
-def get_synapse_db_conn(parser):
+def get_synapse_db_conn(parser, homeserver_config_path):
     """Attempt to get a connection based on database.yaml or homeserver.yaml 
     to Synapse's database, or exit.
     """
@@ -462,7 +462,7 @@ def get_synapse_db_conn(parser):
     if os.path.isfile("database.yaml"):
         conn = get_database_db_conn(parser)
     else:
-        conn = get_homeserver_db_conn(parser)
+        conn = get_homeserver_db_conn(parser, homeserver_config_path)
 
     return conn
 
@@ -485,6 +485,11 @@ def main():
         help="Fetch rows that haven't been accessed in the duration given,"
         " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
         " are d, m or y. NOTE: Currently does not remove entries from the cache",
+    )
+    update_db_parser.add_argument(
+        "--homeserver-config-path",
+        help="Path to the yaml file containing Synapse's DB settings",
+        default="homeserver.yaml"
     )
 
     deleted_parser = subparsers.add_parser(
@@ -509,6 +514,11 @@ def main():
         help="Fetch rows that haven't been accessed in the duration given,"
         " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
         " are d, m or y. NOTE: Currently does not remove entries from the cache",
+    )
+    update_parser.add_argument(
+        "--homeserver-config-path",
+        help="Path to the yaml file containing Synapse's DB settings",
+        default="homeserver.yaml"
     )
 
     write_parser = subparsers.add_parser(
@@ -581,7 +591,7 @@ def main():
 
     if args.cmd == "update-db":
         sqlite_conn = get_sqlite_conn(parser)
-        synapse_db_conn = get_synapse_db_conn(parser)
+        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
         run_update_db(synapse_db_conn, sqlite_conn, args.duration)
         return
 
@@ -592,7 +602,7 @@ def main():
 
     if args.cmd == "update":
         sqlite_conn = get_sqlite_conn(parser)
-        synapse_db_conn = get_synapse_db_conn(parser)
+        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
         run_update_db(synapse_db_conn, sqlite_conn, args.duration)
         run_check_delete(sqlite_conn, args.base_path)
         return
