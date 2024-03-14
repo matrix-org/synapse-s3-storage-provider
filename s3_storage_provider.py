@@ -62,6 +62,7 @@ class S3StorageProviderBackend(StorageProvider):
     def __init__(self, hs, config):
         self.cache_directory = hs.config.media.media_store_path
         self.bucket = config["bucket"]
+        self.prefix = config["prefix"]
         # A dictionary of extra arguments for uploading files.
         # See https://boto3.amazonaws.com/v1/documentation/api/latest/reference/customizations/s3.html#boto3.s3.transfer.S3Transfer.ALLOWED_UPLOAD_ARGS
         # for a list of possible keys.
@@ -121,11 +122,10 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _store_file():
             with LoggingContext(parent_context=parent_logcontext):
-
                 self._get_s3_client().upload_file(
                     Filename=os.path.join(self.cache_directory, path),
                     Bucket=self.bucket,
-                    Key=path,
+                    Key=self.prefix + path,
                     ExtraArgs=self.extra_args,
                 )
 
@@ -141,7 +141,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         def _get_file():
             s3_download_task(
-                self._get_s3_client(), self.bucket, path, self.extra_args, d, logcontext
+                self._get_s3_client(), self.bucket, self.prefix + path, self.extra_args, d, logcontext
             )
 
         self._s3_pool.callInThread(_get_file)
@@ -154,9 +154,10 @@ class S3StorageProviderBackend(StorageProvider):
 
         The returned value is passed into the constructor.
 
-        In this case we return a dict with fields, `bucket` and `storage_class`
+        In this case we return a dict with fields, `bucket`, `prefix` and `storage_class`
         """
         bucket = config["bucket"]
+        prefix = config.get("prefix", "")
         storage_class = config.get("storage_class", "STANDARD")
 
         assert isinstance(bucket, string_types)
@@ -164,6 +165,7 @@ class S3StorageProviderBackend(StorageProvider):
 
         result = {
             "bucket": bucket,
+            "prefix": prefix,
             "extra_args": {"StorageClass": storage_class},
         }
 

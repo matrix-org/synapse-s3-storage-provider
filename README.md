@@ -38,6 +38,11 @@ media_storage_providers:
     # Default is STANDARD.
     #storage_class: "STANDARD_IA"
 
+    # Prefix for all media in bucket, can't be changed once media has been uploaded
+    # Useful if sharing the bucket between Synapses
+    # Blank if not provided
+    #prefix: "prefix/to/files/in/bucket"
+
     # The maximum number of concurrent threads which will be used to connect
     # to S3. Each thread manages a single connection. Default is 40.
     #
@@ -91,4 +96,3 @@ For maintainers:
 1. Update the `__version__` in setup.py. Commit. Push.
 2. Create a release on GitHub for this version.
 3. When published, a [GitHub action workflow](https://github.com/matrix-org/synapse-s3-storage-provider/actions/workflows/release.yml) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
-
