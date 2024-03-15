@@ -32,7 +32,7 @@ progress = True
 
 
 def parse_duration(string):
-    """Parse a string into a duration supports suffix of d, m or y.
+    """Parse a string into a duration supports suffix of s, h, d, m or y.
     """
     suffix = string[-1]
     number = string[:-1]
@@ -41,7 +41,7 @@ def parse_duration(string):
         number = int(number)
     except ValueError:
         raise argparse.ArgumentTypeError(
-            "duration must be an integer followed by a 'd', 'm' or 'y' suffix"
+            "duration must be an integer followed by a 's', 'h', 'd', 'm' or 'y' suffix"
         )
 
     now = datetime.datetime.now()
@@ -51,8 +51,14 @@ def parse_duration(string):
         then = now - datetime.timedelta(days=30 * number)
     elif suffix == "y":
         then = now - datetime.timedelta(days=365 * number)
+    elif suffix == "h":
+        then = now - datetime.timedelta(hours=number)
+    # We can't sensibly do minutes as months has taken 'm', seconds can be used to implement minutes
+    # This would be the natural suffix as per https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html
+    elif suffix == "s":
+        then = now - datetime.timedelta(seconds=number)
     else:
-        raise argparse.ArgumentTypeError("duration must end in 'd', 'm' or 'y'")
+        raise argparse.ArgumentTypeError("duration must end in 's', 'h', 'd', 'm' or 'y'")
 
     return then
 
@@ -484,7 +490,7 @@ def main():
         type=parse_duration,
         help="Fetch rows that haven't been accessed in the duration given,"
         " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are d, m or y. NOTE: Currently does not remove entries from the cache",
+        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
     )
     update_db_parser.add_argument(
         "--homeserver-config-path",
@@ -513,7 +519,7 @@ def main():
         type=parse_duration,
         help="Fetch rows that haven't been accessed in the duration given,"
         " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are d, m or y. NOTE: Currently does not remove entries from the cache",
+        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
     )
     update_parser.add_argument(
         "--homeserver-config-path",
