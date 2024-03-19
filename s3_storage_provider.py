@@ -334,8 +334,7 @@ class _S3Responder(Responder):
         self.stop_event.set()
         self.wakeup_event.set()
         if not self.deferred.called:
-            with LoggingContext():
-                self.deferred.errback(Exception("Consumer ask to stop producing"))
+            self.deferred.errback(Exception("Consumer ask to stop producing"))
 
     def _write(self, chunk):
         """Writes the chunk of data to consumer. Called by _S3DownloadThread.
