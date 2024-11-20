@@ -27,6 +27,7 @@ media_storage_providers:
     endpoint_url: <S3_LIKE_SERVICE_ENDPOINT_URL>
     access_key_id: <S3_ACCESS_KEY_ID>
     secret_access_key: <S3_SECRET_ACCESS_KEY>
+    session_token: <S3_SESSION_TOKEN>
 
     # Server Side Encryption for Customer-provided keys
     #sse_customer_key: <S3_SSEC_KEY>
