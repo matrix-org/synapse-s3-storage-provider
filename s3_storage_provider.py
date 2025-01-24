@@ -13,9 +13,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import os
 import threading
+import re
 from typing import Dict, Any, Optional
 from twisted.internet import reactor, defer, threads
 from twisted.python.failure import Failure
@@ -37,6 +37,55 @@ except ImportError:
 logger = logging.getLogger("synapse.s3")
 
 READ_CHUNK_SIZE = 16 * 1024
+
+def parse_duration(duration_str: str) -> Optional[int]:
+    """Parse a duration string into milliseconds.
+    
+    Supports formats:
+    - Nd: N days
+    - Nh: N hours
+    - Nm: N minutes
+    - Ns: N seconds
+    - N: plain milliseconds
+    
+    Returns milliseconds or None if invalid
+    """
+    if duration_str is None:
+        return None
+        
+    if isinstance(duration_str, (int, float)):
+        return int(duration_str)
+        
+    duration_str = str(duration_str).strip().lower()
+    if not duration_str:
+        return None
+        
+    # Try to parse as plain milliseconds first
+    try:
+        return int(duration_str)
+    except ValueError:
+        pass
+        
+    # Parse duration with unit
+    match = re.match(r'^(\d+)(d|h|m|s|min)$', duration_str)
+    if not match:
+        logger.warning("Invalid duration format: %s", duration_str)
+        return None
+        
+    value, unit = match.groups()
+    value = int(value)
+    
+    # Convert to milliseconds
+    if unit == 'd':
+        return value * 24 * 60 * 60 * 1000
+    elif unit == 'h':
+        return value * 60 * 60 * 1000
+    elif unit == 'm' or unit == 'min':
+        return value * 60 * 1000
+    elif unit == 's':
+        return value * 1000
+    
+    return None
 
 class S3StorageProviderBackend(StorageProvider):
     """Storage provider for S3 storage.
@@ -82,11 +131,11 @@ class S3StorageProviderBackend(StorageProvider):
         self.store_remote = parse_bool(config.get("store_remote"))
         self.store_synchronous = parse_bool(config.get("store_synchronous"))
 
-        # Get media retention settings
+        # Get media retention settings with duration parsing
         media_retention = config.get("media_retention", {})
         if isinstance(media_retention, dict):
-            self.local_media_lifetime = media_retention.get("local_media_lifetime")
-            self.remote_media_lifetime = media_retention.get("remote_media_lifetime")
+            self.local_media_lifetime = parse_duration(media_retention.get("local_media_lifetime"))
+            self.remote_media_lifetime = parse_duration(media_retention.get("remote_media_lifetime"))
         else:
             logger.warning("media_retention config is not a dictionary: %s", media_retention)
 
