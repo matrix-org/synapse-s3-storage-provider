@@ -425,6 +425,7 @@ def get_homeserver_db_conn(parser, homeserver_config_path):
                 password=database_args["password"],
                 database=database_args["database"],
                 host=database_args["host"],
+                port=database_args["port"],
             )
     except sqlite3.OperationalError as e:
         parser.error("Could not connect to sqlite3 database: %s" % (e,))
