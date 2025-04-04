@@ -173,7 +173,7 @@ class S3StorageProviderBackend(StorageProvider):
         }
 
         if "region_name" in config:
-            result["region_name"] = config["region_name"]
+            result["region_name"] = str(config["region_name"])
 
         if "endpoint_url" in config:
             result["endpoint_url"] = config["endpoint_url"]
@@ -182,7 +182,7 @@ class S3StorageProviderBackend(StorageProvider):
             result["access_key_id"] = str(config["access_key_id"])
 
         if "secret_access_key" in config:
-            result["secret_access_key"] = str(config["secret_access_key"])
+            result["secret_access_key"] = config["secret_access_key"]
 
         if "session_token" in config:
             result["session_token"] = config["session_token"]
