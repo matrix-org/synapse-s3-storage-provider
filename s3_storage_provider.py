@@ -179,10 +179,10 @@ class S3StorageProviderBackend(StorageProvider):
             result["endpoint_url"] = config["endpoint_url"]
 
         if "access_key_id" in config:
-            result["access_key_id"] = config["access_key_id"]
+            result["access_key_id"] = str(config["access_key_id"])
 
         if "secret_access_key" in config:
-            result["secret_access_key"] = config["secret_access_key"]
+            result["secret_access_key"] = str(config["secret_access_key"])
 
         if "session_token" in config:
             result["session_token"] = config["session_token"]
