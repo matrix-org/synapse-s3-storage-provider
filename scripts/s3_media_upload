@@ -415,15 +415,19 @@ def get_homeserver_db_conn(parser, homeserver_config_path):
         parser.error("%s is not valid yaml: %s" % (homeserver_config_path, e,))
 
     try:
-        database_name = homeserver_yaml["database"]["name"]
+        database_engine_name = homeserver_yaml["database"]["name"]
         database_args = homeserver_yaml["database"]["args"]
-        if database_name == "sqlite3":
-            synapse_db_conn = sqlite3.connect(database=database_args["database"])
+        if database_engine_name == "sqlite3":
+            database_path = database_args["database"]
+            synapse_db_conn = sqlite3.connect(database=database_path)
         else:
+            # Determine the database name. "database" is a deprecated form of
+            # the option name. See https://www.psycopg.org/docs/module.html
+            database_name = database_args.get("dbname", database_args["database"])
             synapse_db_conn = psycopg2.connect(
                 user=database_args["user"],
                 password=database_args["password"],
-                database=database_args["database"],
+                database=database_name,
                 host=database_args["host"],
                 port=database_args["port"],
             )
