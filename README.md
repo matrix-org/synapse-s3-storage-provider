@@ -48,6 +48,13 @@ media_storage_providers:
     # to S3. Each thread manages a single connection. Default is 40.
     #
     #threadpool_size: 20
+
+    # Set request_checksum_calculation or response_checksum_validation. 
+    # Depending on your S3 provider you may need to set these values. Esp. in case you are using a self-hosted system that does not support the functionality provided by AWS. 
+    # Default is 'when_required'
+    # request_checksum_calculation: "when_supported" | "when_required"
+    # response_checksum_validation: "when_supported" | "when_required"
+    
 ```
 
 This module uses `boto3`, and so the credentials should be specified as
