@@ -22,6 +22,7 @@ from six import string_types
 
 import boto3
 import botocore
+from botocore.config import Config
 
 from twisted.internet import defer, reactor, threads
 from twisted.python.failure import Failure
@@ -84,18 +85,10 @@ class S3StorageProviderBackend(StorageProvider):
         if "session_token" in config:
             self.api_kwargs["aws_session_token"] = config["session_token"]
 
-        if "request_checksum_calculation" in config or "response_checksum_validation" in config:
-            from botocore.config import Config
-            request_checksum_calculation = None
-            response_checksum_validation = None
-            if "request_checksum_calculation" in config:
-                request_checksum_calculation = config["request_checksum_calculation"]
-            if "response_checksum_validation" in config:
-                response_checksum_validation = config["response_checksum_validation"]
-            self.api_kwargs["config"] = Config(
-                response_checksum_validation=response_checksum_validation,                
-                request_checksum_calculation=request_checksum_calculation
-            )
+        self.api_kwargs["config"] = Config(
+            response_checksum_validation=config.get("response_checksum_validation", 'when_required'),
+            request_checksum_calculation=config.get("request_checksum_calculation", 'when_required')
+        )
 
         self._s3_client = None
         self._s3_client_lock = threading.Lock()

@@ -49,8 +49,9 @@ media_storage_providers:
     #
     #threadpool_size: 20
 
-    # Set request_checksum_calculation or response_checksum_validation
-    # Default is None
+    # Set request_checksum_calculation or response_checksum_validation. 
+    # Depending on your S3 provider you may need to set these values. Esp. in case you are using a self-hosted system that does not support the functionality provided by AWS. 
+    # Default is 'when_required'
     # request_checksum_calculation: "when_supported" | "when_required"
     # response_checksum_validation: "when_supported" | "when_required"
     
