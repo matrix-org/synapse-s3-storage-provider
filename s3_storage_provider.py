@@ -86,8 +86,8 @@ class S3StorageProviderBackend(StorageProvider):
             self.api_kwargs["aws_session_token"] = config["session_token"]
 
         self.api_kwargs["config"] = Config(
-            response_checksum_validation=config.get("response_checksum_validation", 'when_required'),
-            request_checksum_calculation=config.get("request_checksum_calculation", 'when_required')
+            response_checksum_validation=config.get("response_checksum_validation", "when_required"),
+            request_checksum_calculation=config.get("request_checksum_calculation", "when_required")
         )
 
         self._s3_client = None
