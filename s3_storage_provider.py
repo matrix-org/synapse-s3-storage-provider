@@ -179,13 +179,13 @@ class S3StorageProviderBackend(StorageProvider):
         }
 
         if "region_name" in config:
-            result["region_name"] = config["region_name"]
+            result["region_name"] = str(config["region_name"])
 
         if "endpoint_url" in config:
             result["endpoint_url"] = config["endpoint_url"]
 
         if "access_key_id" in config:
-            result["access_key_id"] = config["access_key_id"]
+            result["access_key_id"] = str(config["access_key_id"])
 
         if "secret_access_key" in config:
             result["secret_access_key"] = config["secret_access_key"]
