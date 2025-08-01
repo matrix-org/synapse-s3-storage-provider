@@ -301,6 +301,9 @@ class _S3Responder(Responder):
     """
 
     def __init__(self):
+        parent_logcontext = current_context()
+        with LoggingContext(parent_context=parent_logcontext):
+            logger.info("Responder For S3")
         # Triggered by responder when more data has been requested (or
         # stop_event has been triggered)
         self.wakeup_event = threading.Event()
