@@ -58,7 +58,7 @@ jobs:
         server_name=`echo $mxc | sed 's^mxc://\(.*\)/.*^\1^'`
         media_id=`echo $mxc | sed 's^mxc://.*/\(.*\)^\1^'`
         #Downloading uploaded file
-        curl -q -o round_trip http://127.0.0.1:8008/_matrix/media/v3/download/${server_name}/${media_id}/
+        curl -q -o round_trip -H "Authorization: Bearer $access_token" http://127.0.0.1:8008/_matrix/client/v1/media/download/${server_name}/${media_id}
         #Verify file against original
         diff round_trip s3_storage_provider.py
         #Verify file against minio data store
