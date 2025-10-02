@@ -23,11 +23,11 @@ from six import string_types
 import boto3
 import botocore
 
-from twisted.internet import defer, reactor, threads
+from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
-from twisted.python.threadpool import ThreadPool
 
-from synapse.module_api import run_in_background
+from synapse.logging.context import make_deferred_yieldable
+from synapse.module_api import ModuleApi
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
@@ -54,6 +54,7 @@ class S3StorageProviderBackend(StorageProvider):
     """
 
     def __init__(self, hs, config):
+        self._module_api: ModuleApi = hs.get_module_api()
         self.cache_directory = hs.config.media.media_store_path
         self.bucket = config["bucket"]
         self.prefix = config["prefix"]
@@ -82,15 +83,6 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_client_lock = threading.Lock()
 
         threadpool_size = config.get("threadpool_size", 40)
-        self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
-        self._s3_pool.start()
-
-        # Manually stop the thread pool on shutdown. If we don't do this then
-        # stopping Synapse takes an extra ~30s as Python waits for the threads
-        # to exit.
-        reactor.addSystemEventTrigger(
-            "during", "shutdown", self._s3_pool.stop,
-        )
 
     def _get_s3_client(self):
         # this method is designed to be thread-safe, so that we can share a
@@ -112,32 +104,31 @@ class S3StorageProviderBackend(StorageProvider):
                 self._s3_client = s3 = b3_session.client("s3", **self.api_kwargs)
             return s3
 
-    def store_file(self, path, file_info):
+    async def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
-        def _store_file():
-            self._get_s3_client().upload_file(
-                Filename=os.path.join(self.cache_directory, path),
-                Bucket=self.bucket,
-                Key=self.prefix + path,
-                ExtraArgs=self.extra_args,
-            )
-
-        return run_in_background(
-            threads.deferToThreadPool, reactor, self._s3_pool, _store_file
+        return await self._module_api.defer_to_thread(
+            self._get_s3_client().upload_file,
+            Filename=os.path.join(self.cache_directory, path),
+            Bucket=self.bucket,
+            Key=self.prefix + path,
+            ExtraArgs=self.extra_args,
         )
 
-    def fetch(self, path, file_info):
+    async def fetch(self, path, file_info):
         """See StorageProvider.fetch"""
         d = defer.Deferred()
 
-        def _get_file():
-            s3_download_task(
-                self._get_s3_client(), self.bucket, self.prefix + path, self.extra_args, d
-            )
+        await self._module_api.defer_to_thread(
+            s3_download_task,
+            self._get_s3_client(),
+            self.bucket,
+            self.prefix + path,
+            self.extra_args,
+            d,
+        )
 
-        run_in_background(self._s3_pool.callInThread, _get_file)
-        return d
+        return await make_deferred_yieldable(d)
 
     @staticmethod
     def parse_config(config):
