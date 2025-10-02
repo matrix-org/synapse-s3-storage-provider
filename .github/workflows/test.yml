@@ -15,9 +15,12 @@ jobs:
       with:
         python-version: "3.x"
     - name: Run synapse
-      uses: michaelkaye/setup-matrix-synapse@v1.0.1
+      uses: michaelkaye/setup-matrix-synapse@v1.0.5
       with: 
-        uploadLogs: true
+        # This is turned off as it currently breaks runs. Can be re-enabled once
+        # `setup-matrix-synapse` updates its `@actions/artifact` to
+        # v2.x. See https://github.com/michaelkaye/setup-matrix-synapse/issues/102
+        uploadLogs: false
         httpPort: 8008
         customModules: "synapse-s3-storage-provider"
         customConfig: |
@@ -58,7 +61,7 @@ jobs:
         server_name=`echo $mxc | sed 's^mxc://\(.*\)/.*^\1^'`
         media_id=`echo $mxc | sed 's^mxc://.*/\(.*\)^\1^'`
         #Downloading uploaded file
-        curl -q -o round_trip http://127.0.0.1:8008/_matrix/media/v3/download/${server_name}/${media_id}/
+        curl -q -o round_trip -H "Authorization: Bearer $access_token" http://127.0.0.1:8008/_matrix/client/v1/media/download/${server_name}/${media_id}
         #Verify file against original
         diff round_trip s3_storage_provider.py
         #Verify file against minio data store

@@ -22,6 +22,7 @@ from six import string_types
 
 import boto3
 import botocore
+from botocore.config import Config
 
 from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
@@ -78,6 +79,11 @@ class S3StorageProviderBackend(StorageProvider):
 
         if "session_token" in config:
             self.api_kwargs["aws_session_token"] = config["session_token"]
+
+        self.api_kwargs["config"] = Config(
+            response_checksum_validation=config.get("response_checksum_validation", "when_required"),
+            request_checksum_calculation=config.get("request_checksum_calculation", "when_required")
+        )
 
         self._s3_client = None
         self._s3_client_lock = threading.Lock()
@@ -153,13 +159,13 @@ class S3StorageProviderBackend(StorageProvider):
         }
 
         if "region_name" in config:
-            result["region_name"] = config["region_name"]
+            result["region_name"] = str(config["region_name"])
 
         if "endpoint_url" in config:
             result["endpoint_url"] = config["endpoint_url"]
 
         if "access_key_id" in config:
-            result["access_key_id"] = config["access_key_id"]
+            result["access_key_id"] = str(config["access_key_id"])
 
         if "secret_access_key" in config:
             result["secret_access_key"] = config["secret_access_key"]
