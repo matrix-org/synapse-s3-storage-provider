@@ -18,7 +18,7 @@ jobs:
       uses: michaelkaye/setup-matrix-synapse@v1.0.5
       with: 
         # This is turned off as it currently breaks runs. Can be re-enabled once
-        # `setup-matrix-synapse` updates its `@actions/artifact` updates to
+        # `setup-matrix-synapse` updates its `@actions/artifact` to
         # v2.x. See https://github.com/michaelkaye/setup-matrix-synapse/issues/102
         uploadLogs: false
         httpPort: 8008
