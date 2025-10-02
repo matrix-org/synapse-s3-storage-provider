@@ -17,7 +17,10 @@ jobs:
     - name: Run synapse
       uses: michaelkaye/setup-matrix-synapse@v1.0.5
       with: 
-        uploadLogs: true
+        # This is turned off as it currently breaks runs. Can be re-enabled once
+        # `setup-matrix-synapse` updates its `@actions/artifact` updates to
+        # v2.x.
+        uploadLogs: false
         httpPort: 8008
         customModules: "synapse-s3-storage-provider"
         customConfig: |
