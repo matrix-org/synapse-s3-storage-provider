@@ -19,7 +19,7 @@ jobs:
       with: 
         # This is turned off as it currently breaks runs. Can be re-enabled once
         # `setup-matrix-synapse` updates its `@actions/artifact` updates to
-        # v2.x.
+        # v2.x. See https://github.com/michaelkaye/setup-matrix-synapse/issues/102
         uploadLogs: false
         httpPort: 8008
         customModules: "synapse-s3-storage-provider"
