@@ -26,6 +26,7 @@ from botocore.config import Config
 
 from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
+from twisted.python.threadpool import ThreadPool
 
 from synapse.logging.context import make_deferred_yieldable
 from synapse.module_api import ModuleApi
@@ -89,6 +90,15 @@ class S3StorageProviderBackend(StorageProvider):
         self._s3_client_lock = threading.Lock()
 
         threadpool_size = config.get("threadpool_size", 40)
+        self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
+        self._s3_pool.start()
+
+        # Manually stop the thread pool on shutdown. If we don't do this then
+        # stopping Synapse takes an extra ~30s as Python waits for the threads
+        # to exit.
+        reactor.addSystemEventTrigger(
+            "during", "shutdown", self._s3_pool.stop,
+        )
 
     def _get_s3_client(self):
         # this method is designed to be thread-safe, so that we can share a
@@ -113,7 +123,8 @@ class S3StorageProviderBackend(StorageProvider):
     async def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
-        return await self._module_api.defer_to_thread(
+        return await self._module_api.defer_to_threadpool(
+            self._s3_pool,
             self._get_s3_client().upload_file,
             Filename=os.path.join(self.cache_directory, path),
             Bucket=self.bucket,
@@ -125,7 +136,8 @@ class S3StorageProviderBackend(StorageProvider):
         """See StorageProvider.fetch"""
         d = defer.Deferred()
 
-        await self._module_api.defer_to_thread(
+        await self._module_api.defer_to_threadpool(
+            self._s3_pool,
             s3_download_task,
             self._get_s3_client(),
             self.bucket,
