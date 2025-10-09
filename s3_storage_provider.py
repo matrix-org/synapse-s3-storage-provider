@@ -136,7 +136,10 @@ class S3StorageProviderBackend(StorageProvider):
         """See StorageProvider.fetch"""
         d = defer.Deferred()
 
-        await self._module_api.defer_to_threadpool(
+        # Don't await this directly, as it will resolve only one the streaming
+        # download from S3 is concluded. Before that happens, we want to pass
+        # execution back to Synapse to stream the file's chunks.
+        self._module_api.defer_to_threadpool(
             self._s3_pool,
             s3_download_task,
             self._get_s3_client(),
@@ -146,7 +149,10 @@ class S3StorageProviderBackend(StorageProvider):
             d,
         )
 
-        return make_deferred_yieldable(d)
+        # DO await on `d`, as it will resolve once a connection to S3 has been
+        # opened. We only want to return to Synapse once we can start streaming
+        # chunks.
+        return await make_deferred_yieldable(d)
 
     @staticmethod
     def parse_config(config):
@@ -204,6 +210,10 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
             exist then resolves with None.
+    
+    Returns:
+        A deferred which resolves to an _S3Responder if the file exists.
+        Otherwise the deferred fails.
     """
     logger.info("Fetching %s from S3", key)
 
