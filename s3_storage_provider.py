@@ -136,17 +136,22 @@ class S3StorageProviderBackend(StorageProvider):
         """See StorageProvider.fetch"""
         d = defer.Deferred()
 
-        # Don't await this directly, as it will resolve only one the streaming
+        # Don't await this directly, as it will resolve only once the streaming
         # download from S3 is concluded. Before that happens, we want to pass
         # execution back to Synapse to stream the file's chunks.
-        self._module_api.defer_to_threadpool(
-            self._s3_pool,
-            s3_download_task,
-            self._get_s3_client(),
-            self.bucket,
-            self.prefix + path,
-            self.extra_args,
-            d,
+        #
+        # We do, however, need to wrap in `run_in_background` to ensure that
+        # `s3_download_task` follows the Synapse logcontext rules.
+        self._module_api.run_in_background(
+            self._module_api.defer_to_threadpool(
+                self._s3_pool,
+                s3_download_task,
+                self._get_s3_client(),
+                self.bucket,
+                self.prefix + path,
+                self.extra_args,
+                d,
+            )
         )
 
         # DO await on `d`, as it will resolve once a connection to S3 has been
