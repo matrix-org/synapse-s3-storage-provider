@@ -146,7 +146,7 @@ class S3StorageProviderBackend(StorageProvider):
             d,
         )
 
-        return await make_deferred_yieldable(d)
+        return make_deferred_yieldable(d)
 
     @staticmethod
     def parse_config(config):
