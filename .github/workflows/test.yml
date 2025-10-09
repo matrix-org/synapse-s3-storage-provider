@@ -57,6 +57,9 @@ jobs:
         mxc=`curl -q -H "Authorization: Bearer $access_token" http://127.0.0.1:8008/_matrix/media/v3/upload --data-binary @s3_storage_provider.py | jq -r .content_uri`
         server_name=`echo $mxc | sed 's^mxc://\(.*\)/.*^\1^'`
         media_id=`echo $mxc | sed 's^mxc://.*/\(.*\)^\1^'`
+        #Upload the file to S3 and delete from Synapse's local store. This forces retrieval from S3 on download.
+        synapse/env/bin/s3_media_upload --no-progress update --homeserver-config-path synapse/homeserver.yaml /tmp/data 0d
+        synapse/env/bin/s3_media_upload --no-progress upload --delete --endpoint-url http://127.0.0.1:9000/ /tmp/data s3-storage-provider-tester
         #Downloading uploaded file
         curl -q -o round_trip -H "Authorization: Bearer $access_token" http://127.0.0.1:8008/_matrix/client/v1/media/download/${server_name}/${media_id}
         #Verify file against original
