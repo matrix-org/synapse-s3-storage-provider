@@ -144,15 +144,14 @@ class S3StorageProviderBackend(StorageProvider):
         # coroutine returned by `defer_to_threadpool` is used, and therefore
         # actually run.
         run_in_background(
-            self._module_api.defer_to_threadpool(
-                self._s3_pool,
-                s3_download_task,
-                self._get_s3_client(),
-                self.bucket,
-                self.prefix + path,
-                self.extra_args,
-                d,
-            )
+            self._module_api.defer_to_threadpool,
+            self._s3_pool,
+            s3_download_task,
+            self._get_s3_client(),
+            self.bucket,
+            self.prefix + path,
+            self.extra_args,
+            d,
         )
 
         # DO await on `d`, as it will resolve once a connection to S3 has been
