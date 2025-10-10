@@ -21,8 +21,8 @@ setup(
     py_modules=["s3_storage_provider"],
     scripts=["scripts/s3_media_upload"],
     install_requires=[
-        "boto3>=1.9.23,<2.0",
-        "botocore>=1.31.62,<2.0",
+        "boto3>=1.36.0,<2.0",
+        "botocore>=1.36.0,<2.0",
         "humanize>=4.0,<5.0",
         "psycopg2>=2.7.5,<3.0",
         "PyYAML>=5.4,<7.0",
