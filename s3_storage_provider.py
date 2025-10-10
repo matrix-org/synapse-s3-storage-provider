@@ -29,7 +29,7 @@ from twisted.python.failure import Failure
 from twisted.python.threadpool import ThreadPool
 
 from synapse.logging.context import make_deferred_yieldable
-from synapse.module_api import ModuleApi
+from synapse.module_api import ModuleApi, run_in_background
 from synapse.rest.media.v1._base import Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
@@ -143,7 +143,7 @@ class S3StorageProviderBackend(StorageProvider):
         # We do, however, need to wrap in `run_in_background` to ensure that the
         # coroutine returned by `defer_to_threadpool` is used, and therefore
         # actually run.
-        self._module_api.run_in_background(
+        run_in_background(
             self._module_api.defer_to_threadpool(
                 self._s3_pool,
                 s3_download_task,
