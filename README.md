@@ -104,5 +104,12 @@ Packaging and release
 For maintainers:
 
 1. Update the `__version__` in setup.py. Commit. Push.
-2. Create a release on GitHub for this version.
-3. When published, a [GitHub action workflow](https://github.com/matrix-org/synapse-s3-storage-provider/actions/workflows/release.yml) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
+1. Create a signed tag and push that:
+
+    ```
+    git tag -s vX.Y.Z
+    git push origin vX.Y.Z
+    ```
+
+1. [Create a release on GitHub](https://github.com/matrix-org/synapse-s3-storage-provider/releases/new) for this version.
+1. When published, a [GitHub action workflow](https://github.com/matrix-org/synapse-s3-storage-provider/actions/workflows/release.yml) will build the package and upload to [PyPI](https://pypi.org/project/synapse-s3-storage-provider/).
