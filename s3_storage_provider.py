@@ -1,889 +1,400 @@
-#!/usr/bin/env python
-import argparse
-import datetime
+# -*- coding: utf-8 -*-
+# Copyright 2018 New Vector Ltd
+# Copyright 2021 The Matrix.org Foundation C.I.C.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import logging
 import os
-import sqlite3
+import threading
+
+from six import string_types
 
 import boto3
 import botocore
-import humanize
-import psycopg2
-import tqdm
-import yaml
+from botocore.config import Config
 
-# Schema for our sqlite database cache
-SCHEMA = """
-         CREATE TABLE IF NOT EXISTS media (
-                                              origin TEXT NOT NULL,  -- empty string if local media
-                                              media_id TEXT NOT NULL,
-                                              filesystem_id TEXT NOT NULL,
-             -- Type is "local" or "remote"
-                                              type TEXT NOT NULL,
-             -- indicates whether the media and all its thumbnails have been deleted from the
-             -- local cache
-                                              known_deleted BOOLEAN NOT NULL
-         );
+from twisted.internet import defer, reactor
+from twisted.python.failure import Failure
+from twisted.python.threadpool import ThreadPool
 
-         CREATE UNIQUE INDEX IF NOT EXISTS media_id_idx ON media(origin, media_id);
-         CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted); \
-         """
+from synapse.logging.context import make_deferred_yieldable
+from synapse.module_api import ModuleApi, run_in_background
+from synapse.rest.media.v1._base import Responder
+from synapse.rest.media.v1.storage_provider import StorageProvider
 
-progress = True
+logger = logging.getLogger("synapse.s3")
 
 
-def parse_duration(string):
-    """Parse a string into a duration supports suffix of s, h, d, m or y.
+# The list of valid AWS storage class names
+_VALID_STORAGE_CLASSES = (
+    "STANDARD",
+    "REDUCED_REDUNDANCY",
+    "STANDARD_IA",
+    "INTELLIGENT_TIERING",
+)
+
+# Chunk size to use when reading from s3 connection in bytes
+READ_CHUNK_SIZE = 16 * 1024
+
+
+class S3StorageProviderBackend(StorageProvider):
     """
-    suffix = string[-1]
-    number = string[:-1]
+    Args:
+        hs (HomeServer)
+        config: The config returned by `parse_config`
+    """
 
-    try:
-        number = int(number)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            "duration must be an integer followed by a 's', 'h', 'd', 'm' or 'y' suffix"
+    def __init__(self, hs, config):
+        self._module_api: ModuleApi = hs.get_module_api()
+        self.cache_directory = hs.config.media.media_store_path
+        self.bucket = config["bucket"]
+        self.prefix = config["prefix"]
+        # A dictionary of extra arguments for uploading files.
+        # See https://boto3.amazonaws.com/v1/documentation/api/latest/reference/customizations/s3.html#boto3.s3.transfer.S3Transfer.ALLOWED_UPLOAD_ARGS
+        # for a list of possible keys.
+        self.extra_args = config["extra_args"]
+        self.api_kwargs = {}
+
+        if "region_name" in config:
+            self.api_kwargs["region_name"] = config["region_name"]
+
+        if "endpoint_url" in config:
+            self.api_kwargs["endpoint_url"] = config["endpoint_url"]
+
+        if "access_key_id" in config:
+            self.api_kwargs["aws_access_key_id"] = config["access_key_id"]
+
+        if "secret_access_key" in config:
+            self.api_kwargs["aws_secret_access_key"] = config["secret_access_key"]
+
+        if "session_token" in config:
+            self.api_kwargs["aws_session_token"] = config["session_token"]
+
+        self.api_kwargs["config"] = Config(
+            response_checksum_validation=config.get("response_checksum_validation", "when_required"),
+            request_checksum_calculation=config.get("request_checksum_calculation", "when_required")
         )
 
-    now = datetime.datetime.now()
-    if suffix == "d":
-        then = now - datetime.timedelta(days=number)
-    elif suffix == "m":
-        then = now - datetime.timedelta(days=30 * number)
-    elif suffix == "y":
-        then = now - datetime.timedelta(days=365 * number)
-    elif suffix == "h":
-        then = now - datetime.timedelta(hours=number)
-    # We can't sensibly do minutes as months has taken 'm', seconds can be used to implement minutes
-    # This would be the natural suffix as per https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html
-    elif suffix == "s":
-        then = now - datetime.timedelta(seconds=number)
-    else:
-        raise argparse.ArgumentTypeError("duration must end in 's', 'h', 'd', 'm' or 'y'")
+        self._s3_client = None
+        self._s3_client_lock = threading.Lock()
 
-    return then
+        threadpool_size = config.get("threadpool_size", 40)
+        self._s3_pool = ThreadPool(name="s3-pool", maxthreads=threadpool_size)
+        self._s3_pool.start()
 
-
-def mark_as_deleted(sqlite_conn, origin, media_id):
-    with sqlite_conn:
-        sqlite_conn.execute(
-            """
-            UPDATE media SET known_deleted = ?
-            WHERE origin = ? AND media_id = ?
-            """,
-            (True, origin, media_id),
+        # Manually stop the thread pool on shutdown. If we don't do this then
+        # stopping Synapse takes an extra ~30s as Python waits for the threads
+        # to exit.
+        reactor.addSystemEventTrigger(
+            "during", "shutdown", self._s3_pool.stop,
         )
 
+    def _get_s3_client(self):
+        # this method is designed to be thread-safe, so that we can share a
+        # single boto3 client across multiple threads.
+        #
+        # (XXX: is creating a client actually a blocking operation, or could we do
+        # this on the main thread, to simplify all this?)
 
-def get_not_deleted_count(sqlite_conn):
-    """Get count of all rows in our cache that we don't think have been deleted
-    """
-    cur = sqlite_conn.cursor()
+        # first of all, do a fast lock-free check
+        s3 = self._s3_client
+        if s3:
+            return s3
 
-    cur.execute(
+        # no joy, grab the lock and repeat the check
+        with self._s3_client_lock:
+            s3 = self._s3_client
+            if not s3:
+                b3_session = boto3.session.Session()
+                self._s3_client = s3 = b3_session.client("s3", **self.api_kwargs)
+            return s3
+
+    async def store_file(self, path, file_info):
+        """See StorageProvider.store_file"""
+
+        return await self._module_api.defer_to_threadpool(
+            self._s3_pool,
+            self._get_s3_client().upload_file,
+            Filename=os.path.join(self.cache_directory, path),
+            Bucket=self.bucket,
+            Key=self.prefix + path,
+            ExtraArgs=self.extra_args,
+        )
+
+    async def fetch(self, path, file_info):
+        """See StorageProvider.fetch"""
+        d = defer.Deferred()
+
+        # Don't await this directly, as it will resolve only once the streaming
+        # download from S3 is concluded. Before that happens, we want to pass
+        # execution back to Synapse to stream the file's chunks.
+        #
+        # We do, however, need to wrap in `run_in_background` to ensure that the
+        # coroutine returned by `defer_to_threadpool` is used, and therefore
+        # actually run.
+        run_in_background(
+            self._module_api.defer_to_threadpool,
+            self._s3_pool,
+            s3_download_task,
+            self._get_s3_client(),
+            self.bucket,
+            self.prefix + path,
+            self.extra_args,
+            d,
+        )
+
+        # DO await on `d`, as it will resolve once a connection to S3 has been
+        # opened. We only want to return to Synapse once we can start streaming
+        # chunks.
+        return await make_deferred_yieldable(d)
+
+    @staticmethod
+    def parse_config(config):
+        """Called on startup to parse config supplied. This should parse
+        the config and raise if there is a problem.
+
+        The returned value is passed into the constructor.
+
+        In this case we return a dict with fields, `bucket`, `prefix` and `storage_class`
         """
-        SELECT COALESCE(count(*), 0) FROM media
-        WHERE NOT known_deleted
-        """
-    )
-    (count,) = cur.fetchone()
-    return count
+        bucket = config["bucket"]
+        prefix = config.get("prefix", "")
+        storage_class = config.get("storage_class", "STANDARD")
+
+        assert isinstance(bucket, string_types)
+        assert storage_class in _VALID_STORAGE_CLASSES
+
+        result = {
+            "bucket": bucket,
+            "prefix": prefix,
+            "extra_args": {"StorageClass": storage_class},
+        }
+
+        if "region_name" in config:
+            result["region_name"] = str(config["region_name"])
+
+        if "endpoint_url" in config:
+            result["endpoint_url"] = config["endpoint_url"]
+
+        if "access_key_id" in config:
+            result["access_key_id"] = str(config["access_key_id"])
+
+        if "secret_access_key" in config:
+            result["secret_access_key"] = config["secret_access_key"]
+
+        if "session_token" in config:
+            result["session_token"] = config["session_token"]
+
+        if "sse_customer_key" in config:
+            result["extra_args"]["SSECustomerKey"] = config["sse_customer_key"]
+            result["extra_args"]["SSECustomerAlgorithm"] = config.get(
+                "sse_customer_algo", "AES256"
+            )
+
+        return result
 
 
-def get_not_deleted(sqlite_conn):
-    """Get all rows in our cache that we don't think have been deleted
+def s3_download_task(s3_client, bucket, key, extra_args, deferred):
+    """Attempts to download a file from S3.
+
+    Args:
+        s3_client: boto3 s3 client
+        bucket (str): The S3 bucket which may have the file
+        key (str): The key of the file
+        deferred (Deferred[_S3Responder|None]): If file exists
+            resolved with an _S3Responder instance, if it doesn't
+            exist then resolves with None.
+    
+    Returns:
+        A deferred which resolves to an _S3Responder if the file exists.
+        Otherwise the deferred fails.
     """
-    cur = sqlite_conn.cursor()
+    logger.info("Fetching %s from S3", key)
 
-    cur.execute(
-        """
-        SELECT origin, media_id, filesystem_id, type FROM media
-        WHERE NOT known_deleted
-        """
-    )
-    return cur
-
-
-def to_path(origin, filesystem_id, m_type):
-    """Get a relative path to the given media
-    """
-    if m_type == "local":
-        file_path = os.path.join(
-            "local_content", filesystem_id[:2], filesystem_id[2:4], filesystem_id[4:],
-        )
-    elif m_type == "remote":
-        file_path = os.path.join(
-            "remote_content",
-            origin,
-            filesystem_id[:2],
-            filesystem_id[2:4],
-            filesystem_id[4:],
-        )
-    else:
-        raise Exception("Unexpected media type %r", m_type)
-
-    return file_path
-
-
-def to_thumbnail_dir(origin, filesystem_id, m_type):
-    """Get a relative path to the given media's thumbnail directory
-    """
-    if m_type == "local":
-        thumbnail_path = os.path.join(
-            "local_thumbnails",
-            filesystem_id[:2],
-            filesystem_id[2:4],
-            filesystem_id[4:],
-        )
-    elif m_type == "remote":
-        thumbnail_path = os.path.join(
-            "remote_thumbnail",
-            origin,
-            filesystem_id[:2],
-            filesystem_id[2:4],
-            filesystem_id[4:],
-        )
-    else:
-        raise Exception("Unexpected media type %r", m_type)
-
-    return thumbnail_path
-
-
-def get_local_files(base_path, origin, filesystem_id, m_type):
-    """Get a list of relative paths to undeleted files for the given media
-    """
-    local_files = []
-
-    original_path = to_path(origin, filesystem_id, m_type)
-    if os.path.exists(os.path.join(base_path, original_path)):
-        local_files.append(original_path)
-
-    thumbnail_path = to_thumbnail_dir(origin, filesystem_id, m_type)
-    try:
-        with os.scandir(os.path.join(base_path, thumbnail_path)) as dir_entries:
-            for dir_entry in dir_entries:
-                if dir_entry.is_file():
-                    local_files.append(os.path.join(thumbnail_path, dir_entry.name))
-    except FileNotFoundError:
-        # The thumbnail directory does not exist
-        pass
-    except NotADirectoryError:
-        # The thumbnail directory is not a directory for some reason
-        pass
-
-    return local_files
-
-
-def check_file_in_s3(s3, bucket, key, extra_args):
-    """Check the file exists in S3 (though it could be different)
-    """
     try:
         if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
-            s3.head_object(
+            resp = s3_client.get_object(
                 Bucket=bucket,
                 Key=key,
                 SSECustomerKey=extra_args["SSECustomerKey"],
                 SSECustomerAlgorithm=extra_args["SSECustomerAlgorithm"],
             )
         else:
-            s3.head_object(Bucket=bucket, Key=key)
+            resp = s3_client.get_object(Bucket=bucket, Key=key)
+
     except botocore.exceptions.ClientError as e:
-        if int(e.response["Error"]["Code"]) == 404:
-            return False
-        raise
+        if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
+            logger.info("Media %s not found in S3", key)
+            return
 
-    return True
+        reactor.callFromThread(deferred.errback, Failure())
+        return
+
+    producer = _S3Responder()
+    reactor.callFromThread(deferred.callback, producer)
+    _stream_to_producer(reactor, producer, resp["Body"], timeout=90.0)
 
 
-def run_write(sqlite_conn, output_file):
-    """Entry point for write command
+def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
+    """Streams a file like object to the producer.
+
+    Correctly handles producer being paused/resumed/stopped.
+
+    Args:
+        reactor
+        producer (_S3Responder): Producer object to stream results to
+        body (file like): The object to read from
+        status (_ProducerStatus|None): Used to track whether we're currently
+            paused or not. Used for testing
+        timeout (float|None): Timeout in seconds to wait for consume to resume
+            after being paused
     """
-    for origin, _, filesystem_id, m_type in get_not_deleted(sqlite_conn):
-        file_path = to_path(origin, filesystem_id, m_type)
-        print(file_path, file=output_file)
 
-        # Print thumbnail directories with a trailing '/'
-        thumbnail_path = to_thumbnail_dir(origin, filesystem_id, m_type)
-        thumbnail_path = os.path.join(thumbnail_path, "")
-        print(thumbnail_path, file=output_file)
+    # Set when we should be producing, cleared when we are paused
+    wakeup_event = producer.wakeup_event
+
+    # Set if we should stop producing forever
+    stop_event = producer.stop_event
+
+    if not status:
+        status = _ProducerStatus()
+
+    try:
+        while not stop_event.is_set():
+            # We wait for the producer to signal that the consumer wants
+            # more data (or we should abort)
+            if not wakeup_event.is_set():
+                status.set_paused(True)
+                ret = wakeup_event.wait(timeout)
+                if not ret:
+                    raise Exception("Timed out waiting to resume")
+                status.set_paused(False)
+
+            # Check if we were woken up so that we abort the download
+            if stop_event.is_set():
+                return
+
+            chunk = body.read(READ_CHUNK_SIZE)
+            if not chunk:
+                return
+
+            reactor.callFromThread(producer._write, chunk)
+
+    except Exception:
+        reactor.callFromThread(producer._error, Failure())
+    finally:
+        reactor.callFromThread(producer._finish)
+        if body:
+            body.close()
 
 
-def run_update_db(synapse_db_conn, sqlite_conn, before_date):
-    """Entry point for update-db command
+class _S3Responder(Responder):
+    """A Responder for S3. Created by _S3DownloadThread
     """
 
-    local_sql = """
-                SELECT '', media_id, media_id
-                FROM local_media_repository
-                WHERE
-                    COALESCE(last_access_ts, created_ts) < %s
-                  AND url_cache IS NULL \
-                """
+    def __init__(self):
+        # Triggered by responder when more data has been requested (or
+        # stop_event has been triggered)
+        self.wakeup_event = threading.Event()
+        # Trigered by responder when we should abort the download.
+        self.stop_event = threading.Event()
 
-    remote_sql = """
-                 SELECT media_origin, media_id, filesystem_id
-                 FROM remote_media_cache
-                 WHERE
-                     COALESCE(last_access_ts, created_ts) < %s \
-                 """
+        # The consumer we're registered to
+        self.consumer = None
 
-    last_access_ts = int(before_date.timestamp() * 1000)
+        # The deferred returned by write_to_consumer, which should resolve when
+        # all the data has been written (or there has been a fatal error).
+        self.deferred = defer.Deferred()
 
-    print(
-        "Syncing files that haven't been accessed since:", before_date.isoformat(" "),
-    )
+    def write_to_consumer(self, consumer):
+        """See Responder.write_to_consumer
+        """
+        self.consumer = consumer
+        # We are a IPushProducer, so we start producing immediately until we
+        # get a pauseProducing or stopProducing
+        consumer.registerProducer(self, True)
+        self.wakeup_event.set()
+        return make_deferred_yieldable(self.deferred)
 
-    update_count = 0
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop_event.set()
+        self.wakeup_event.set()
 
-    with sqlite_conn:
-        sqlite_cur = sqlite_conn.cursor()
+    def resumeProducing(self):
+        """See IPushProducer.resumeProducing
+        """
+        # The consumer is asking for more data, signal _S3DownloadThread
+        self.wakeup_event.set()
 
-        if isinstance(synapse_db_conn, sqlite3.Connection):
-            synapse_db_curs = synapse_db_conn.cursor()
-            for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
-                synapse_db_curs.execute(sql.replace("%s", "?"), (last_access_ts,))
-                update_count += update_db_process_rows(
-                    mtype, sqlite_cur, synapse_db_curs
-                )
+    def pauseProducing(self):
+        """See IPushProducer.stopProducing
+        """
+        self.wakeup_event.clear()
 
+    def stopProducing(self):
+        """See IPushProducer.stopProducing
+        """
+        # The consumer wants no more data ever, signal _S3DownloadThread
+        self.stop_event.set()
+        self.wakeup_event.set()
+        if not self.deferred.called:
+            self.deferred.errback(Exception("Consumer ask to stop producing"))
+
+    def _write(self, chunk):
+        """Writes the chunk of data to consumer. Called by _S3DownloadThread.
+        """
+        if self.consumer and not self.stop_event.is_set():
+            self.consumer.write(chunk)
+
+    def _error(self, failure):
+        """Called when a fatal error occured while getting data. Called by
+        _S3DownloadThread.
+        """
+        if self.consumer:
+            self.consumer.unregisterProducer()
+            self.consumer = None
+
+        if not self.deferred.called:
+            self.deferred.errback(failure)
+
+    def _finish(self):
+        """Called when there is no more data to write. Called by _S3DownloadThread.
+        """
+        if self.consumer:
+            self.consumer.unregisterProducer()
+            self.consumer = None
+
+        if not self.deferred.called:
+            self.deferred.callback(None)
+
+
+class _ProducerStatus(object):
+    """Used to track whether the s3 download thread is currently paused
+    waiting for consumer to resume. Used for testing.
+    """
+
+    def __init__(self):
+        self.is_paused = threading.Event()
+        self.is_paused.clear()
+
+    def wait_until_paused(self, timeout=None):
+        is_paused = self.is_paused.wait(timeout)
+        if not is_paused:
+            raise Exception("Timed out waiting")
+
+    def set_paused(self, paused):
+        if paused:
+            self.is_paused.set()
         else:
-            with synapse_db_conn.cursor() as synapse_db_curs:
-                for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
-                    synapse_db_curs.execute(sql, (last_access_ts,))
-                    update_count += update_db_process_rows(
-                        mtype, sqlite_cur, synapse_db_curs
-                    )
-
-    print("Synced", update_count, "new rows")
-
-    synapse_db_conn.close()
-
-
-def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs):
-    """Process rows extracted from Synapse's database and insert them in cache
-    """
-    update_count = 0
-
-    for (origin, media_id, filesystem_id) in synapse_db_curs:
-        sqlite_cur.execute(
-            """
-            INSERT OR IGNORE INTO media
-            (origin, media_id, filesystem_id, type, known_deleted)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (origin, media_id, filesystem_id, mtype, False),
-        )
-        update_count += sqlite_cur.rowcount
-
-    return update_count
-
-
-def run_check_delete(sqlite_conn, base_path):
-    """Entry point for check-deleted command
-    """
-    deleted = []
-    if progress:
-        it = tqdm.tqdm(
-            get_not_deleted(sqlite_conn),
-            unit="files",
-            total=get_not_deleted_count(sqlite_conn),
-        )
-    else:
-        it = get_not_deleted(sqlite_conn)
-        print("Checking on ", get_not_deleted_count(sqlite_conn), " undeleted files")
-
-    for origin, media_id, filesystem_id, m_type in it:
-        local_files = get_local_files(base_path, origin, filesystem_id, m_type)
-        if not local_files:
-            deleted.append((origin, media_id))
-
-    with sqlite_conn:
-        sqlite_conn.executemany(
-            """
-            UPDATE media SET known_deleted = ?
-            WHERE origin = ? AND media_id = ?
-            """,
-            ((True, o, m) for o, m in deleted),
-        )
-
-    print("Updated", len(deleted), "as deleted")
-
-
-def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete):
-    """Entry point for upload command
-    """
-    total = get_not_deleted_count(sqlite_conn)
-
-    uploaded_media = 0
-    uploaded_files = 0
-    uploaded_bytes = 0
-    deleted_media = 0
-    deleted_files = 0
-    deleted_bytes = 0
-
-    # This is a progress bar
-    if progress:
-        it = tqdm.tqdm(get_not_deleted(sqlite_conn), unit="files", total=total)
-    else:
-        print("Uploading ", total, " files")
-        it = get_not_deleted(sqlite_conn)
-
-    for origin, media_id, filesystem_id, m_type in it:
-        local_files = get_local_files(base_path, origin, filesystem_id, m_type)
-
-        if not local_files:
-            mark_as_deleted(sqlite_conn, origin, media_id)
-            continue
-
-        # Counters of uploaded and deleted files for this media only
-        media_uploaded_files = 0
-        media_deleted_files = 0
-
-        for rel_file_path in local_files:
-            local_path = os.path.join(base_path, rel_file_path)
-
-            key = s3_prefix + rel_file_path
-            if not check_file_in_s3(s3, bucket, key, extra_args):
-                try:
-                    s3.upload_file(
-                        local_path, bucket, key, ExtraArgs=extra_args,
-                    )
-                except Exception as e:
-                    print("Failed to upload file %s: %s", local_path, e)
-                    continue
-
-                media_uploaded_files += 1
-                uploaded_files += 1
-                uploaded_bytes += os.path.getsize(local_path)
-
-            if should_delete:
-                size = os.path.getsize(local_path)
-                os.remove(local_path)
-
-                try:
-                    # This may have lead to an empty directory, so lets remove all
-                    # that are empty
-                    os.removedirs(os.path.dirname(local_path))
-                except Exception:
-                    # The directory might not be empty, or maybe we don't have
-                    # permission. Either way doesn't really matter.
-                    pass
-
-                media_deleted_files += 1
-                deleted_files += 1
-                deleted_bytes += size
-
-        if media_uploaded_files:
-            uploaded_media += 1
-
-        if media_deleted_files:
-            deleted_media += 1
-
-        if media_deleted_files == len(local_files):
-            # Mark as deleted only if *all* the local files have been deleted
-            mark_as_deleted(sqlite_conn, origin, media_id)
-
-    print("Uploaded", uploaded_media, "media out of", total)
-    print("Uploaded", uploaded_files, "files")
-    print("Uploaded", humanize.naturalsize(uploaded_bytes, gnu=True))
-    print("Deleted", deleted_media, "media")
-    print("Deleted", deleted_files, "files")
-    print("Deleted", humanize.naturalsize(deleted_bytes, gnu=True))
-
-
-def run_remote_cleanup(s3, bucket, s3_prefix, extra_args, synapse_db_conn, local_media_lifetime, remote_media_lifetime, dry_run):
-    expired_media = {
-        "local_media_repository": [],
-        "local_media_repository_thumbnails": [],
-        "remote_media_cache": [],
-        "remote_media_cache_thumbnails": [],
-    }
-
-    if local_media_lifetime:
-        print("Finding expired local media...")
-        cur = synapse_db_conn.cursor()
-
-        sql_local = """
-                    SELECT DISTINCT media_id FROM local_media_repository
-                    WHERE COALESCE(last_access_ts, created_ts) < %s
-                    """
-        last_access_ts_local = int(local_media_lifetime.timestamp() * 1000)
-        cur.execute(sql_local, (last_access_ts_local,))
-        for row in cur:
-            media_id = row[0]
-            expired_media["local_media_repository"].append({
-                "media_id": media_id,
-                "part1": media_id[:2],
-                "part2": media_id[2:4],
-                "part3": media_id[4:],
-            })
-        print(f"Found {len(expired_media['local_media_repository'])} expired local media in local_media_repository")
-
-        sql_thumbnails = """
-                         SELECT DISTINCT media_id FROM local_media_repository_thumbnails
-                         WHERE COALESCE(last_access_ts, created_ts) < %s
-                         """
-        cur.execute(sql_thumbnails, (last_access_ts_local,))
-        for row in cur:
-            media_id = row[0]
-            expired_media["local_media_repository_thumbnails"].append({
-                "media_id": media_id,
-                "part1": media_id[:2],
-                "part2": media_id[2:4],
-                "part3": media_id[4:],
-            })
-        print(f"Found {len(expired_media['local_media_repository_thumbnails'])} expired local media in local_media_repository_thumbnails")
-
-        cur.close()
-
-    if remote_media_lifetime:
-        print("Finding expired remote media...")
-        cur = synapse_db_conn.cursor()
-
-        sql_remote = """
-                     SELECT DISTINCT media_origin, media_id, filesystem_id FROM remote_media_cache
-                     WHERE COALESCE(last_access_ts, created_ts) < %s
-                     """
-        last_access_ts_remote = int(remote_media_lifetime.timestamp() * 1000)
-        cur.execute(sql_remote, (last_access_ts_remote,))
-        for row in cur:
-            origin, media_id, filesystem_id = row
-            expired_media["remote_media_cache"].append({
-                "origin": origin,
-                "media_id": media_id,
-                "filesystem_id": filesystem_id,
-                "part1": filesystem_id[:2],
-                "part2": filesystem_id[2:4],
-                "part3": filesystem_id[4:],
-            })
-        print(f"Found {len(expired_media['remote_media_cache'])} expired remote media in remote_media_cache")
-
-        sql_remote_thumbnails = """
-                                SELECT DISTINCT media_origin, media_id, filesystem_id FROM remote_media_cache_thumbnails
-                                WHERE COALESCE(last_access_ts, created_ts) < %s
-                                """
-        cur.execute(sql_remote_thumbnails, (last_access_ts_remote,))
-        for row in cur:
-            origin, media_id, filesystem_id = row
-            expired_media["remote_media_cache_thumbnails"].append({
-                "origin": origin,
-                "media_id": media_id,
-                "filesystem_id": filesystem_id,
-                "part1": filesystem_id[:2],
-                "part2": filesystem_id[2:4],
-                "part3": filesystem_id[4:],
-            })
-        print(f"Found {len(expired_media['remote_media_cache_thumbnails'])} expired remote media in remote_media_cache_thumbnails")
-
-        cur.close()
-
-    print("Verifying files in S3...")
-
-    category_configs = {
-        "local_media_repository": {"path_prefix": "local_content", "include_origin": False},
-        "local_media_repository_thumbnails": {"path_prefix": "local_thumbnails", "include_origin": False},
-        "remote_media_cache": {"path_prefix": "remote_content", "include_origin": True},
-        "remote_media_cache_thumbnails": {"path_prefix": "remote_thumbnail", "include_origin": True},
-    }
-
-    for category, config in category_configs.items():
-        verified_items = []
-        path_prefix = config["path_prefix"]
-        include_origin = config["include_origin"]
-
-        for item in expired_media[category]:
-            if include_origin:
-                rel_path = os.path.join(path_prefix, item["origin"], item["part1"], item["part2"], item["part3"])
-            else:
-                rel_path = os.path.join(path_prefix, item["part1"], item["part2"], item["part3"])
-
-            key = s3_prefix + rel_path
-            if check_file_in_s3(s3, bucket, key, extra_args):
-                item["s3_key"] = key
-                verified_items.append(item)
-
-        expired_media[category] = verified_items
-
-    print(f"After S3 verification: "
-          f"{len(expired_media['local_media_repository'])} local, "
-          f"{len(expired_media['local_media_repository_thumbnails'])} local thumbnails, "
-          f"{len(expired_media['remote_media_cache'])} remote, "
-          f"{len(expired_media['remote_media_cache_thumbnails'])} remote thumbnails")
-
-    if dry_run:
-        print("Dry run completed, nothing deleted")
-        return
-
-    deleted_counts = {
-        "local_media_repository": 0,
-        "local_media_repository_thumbnails": 0,
-        "remote_media_cache": 0,
-        "remote_media_cache_thumbnails": 0,
-    }
-    for category, items in expired_media.items():
-        for item in items:
-            key = item.get("s3_key")
-            if not key:
-                continue
-            try:
-                if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
-                    s3.delete_object(
-                        Bucket=bucket,
-                        Key=key,
-                        SSECustomerKey=extra_args["SSECustomerKey"],
-                        SSECustomerAlgorithm=extra_args["SSECustomerAlgorithm"],
-                    )
-                else:
-                    s3.delete_object(Bucket=bucket, Key=key)
-                deleted_counts[category] += 1
-            except Exception as e:
-                print(f"Failed to delete {key} from S3: {e}")
-
-    print(f"Successfully deleted from S3: "
-          f"{deleted_counts['local_media_repository']} local, "
-          f"{deleted_counts['local_media_repository_thumbnails']} local thumbnails, "
-          f"{deleted_counts['remote_media_cache']} remote, "
-          f"{deleted_counts['remote_media_cache_thumbnails']} remote thumbnails")
-
-
-def get_sqlite_conn(parser):
-    """Attempt to get a sqlite connection to cache.db, or exit.
-    """
-    try:
-        sqlite_conn = sqlite3.connect("cache.db")
-        sqlite_conn.executescript(SCHEMA)
-    except sqlite3.Error as e:
-        parser.error("Could not open 'cache.db' as sqlite DB: %s" % (e,))
-
-    return sqlite_conn
-
-def get_homeserver_media_retention(parser, homeserver_config_path):
-    try:
-        with open(homeserver_config_path) as f:
-            homeserver_yaml = yaml.safe_load(f)
-    except FileNotFoundError:
-        parser.error("Could not find %s" % (homeserver_config_path,))
-    except yaml.YAMLError as e:
-        parser.error("%s is not valid yaml: %s" % (homeserver_config_path, e,))
-
-    if homeserver_yaml is None:
-        return None, None
-
-    media_retention = homeserver_yaml.get("media_retention")
-    if not isinstance(media_retention, dict):
-        return None, None
-
-    local_media_lifetime, remote_media_lifetime = None, None
-
-    try:
-        local_media_lifetime = media_retention.get("local_media_lifetime")
-        if local_media_lifetime is not None:
-            local_media_lifetime = parse_duration(local_media_lifetime)
-
-        remote_media_lifetime = media_retention.get("remote_media_lifetime")
-        if remote_media_lifetime is not None:
-            remote_media_lifetime = parse_duration(remote_media_lifetime)
-    except argparse.ArgumentTypeError as e:
-        parser.error("Invalid media_retention duration: %s" % (e,))
-
-    return local_media_lifetime, remote_media_lifetime
-
-
-def get_homeserver_db_conn(parser, homeserver_config_path):
-    """Attempt to get a connection based on the provided YAML path to Synapse's
-    database, or exit.
-    """
-
-    try:
-        with open(homeserver_config_path) as f:
-            homeserver_yaml = yaml.safe_load(f)
-    except FileNotFoundError:
-        parser.error("Could not find %s" % (homeserver_config_path,))
-    except yaml.YAMLError as e:
-        parser.error("%s is not valid yaml: %s" % (homeserver_config_path, e,))
-
-    try:
-        database_engine_name = homeserver_yaml["database"]["name"]
-        database_args = homeserver_yaml["database"]["args"]
-        if database_engine_name == "sqlite3":
-            database_path = database_args["database"]
-            synapse_db_conn = sqlite3.connect(database=database_path)
-        else:
-            # Determine the database name. "database" is a deprecated form of
-            # the option name. See https://www.psycopg.org/docs/module.html
-            database_name = database_args.get("dbname", database_args["database"])
-            synapse_db_conn = psycopg2.connect(
-                user=database_args["user"],
-                password=database_args["password"],
-                database=database_name,
-                host=database_args["host"],
-                port=database_args["port"],
-            )
-    except sqlite3.OperationalError as e:
-        parser.error("Could not connect to sqlite3 database: %s" % (e,))
-    except psycopg2.Error as e:
-        parser.error("Could not connect to postgres database: %s" % (e,))
-
-    return synapse_db_conn
-
-def get_database_db_conn(parser):
-    """Attempt to get a connection based on database.yaml to Synapse's
-    database, or exit.
-    """
-
-    try:
-        with open("database.yaml") as f:
-            database_yaml = yaml.safe_load(f)
-    except FileNotFoundError:
-        parser.error("Could not find database.yaml")
-    except yaml.YAMLError as e:
-        parser.error("database.yaml is not valid yaml: %s" % (e,))
-
-    try:
-        if "sqlite" in database_yaml:
-            synapse_db_conn = sqlite3.connect(**database_yaml["sqlite"])
-        elif "postgres" in database_yaml:
-            synapse_db_conn = psycopg2.connect(**database_yaml["postgres"])
-        else:
-            synapse_db_conn = psycopg2.connect(**database_yaml)
-    except sqlite3.OperationalError as e:
-        parser.error("Could not connect to sqlite3 database: %s" % (e,))
-    except psycopg2.Error as e:
-        parser.error("Could not connect to postgres database: %s" % (e,))
-
-    return synapse_db_conn
-
-def get_synapse_db_conn(parser, homeserver_config_path):
-    """Attempt to get a connection based on database.yaml or homeserver.yaml
-    to Synapse's database, or exit.
-    """
-
-    if os.path.isfile("database.yaml"):
-        conn = get_database_db_conn(parser)
-    else:
-        conn = get_homeserver_db_conn(parser, homeserver_config_path)
-
-    return conn
-
-def main():
-    parser = argparse.ArgumentParser(prog="s3_media_upload")
-    parser.add_argument(
-        "--no-progress",
-        help="do not show progress bars",
-        action="store_true",
-        dest="no_progress",
-    )
-    subparsers = parser.add_subparsers(help="command to run", dest="cmd")
-
-    update_db_parser = subparsers.add_parser(
-        "update-db", help="Syncs rows from database to local cache"
-    )
-    update_db_parser.add_argument(
-        "duration",
-        type=parse_duration,
-        help="Fetch rows that haven't been accessed in the duration given,"
-             " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-             " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
-    )
-    update_db_parser.add_argument(
-        "--homeserver-config-path",
-        help="Path to the yaml file containing Synapse's DB settings",
-        default="homeserver.yaml"
-    )
-
-    deleted_parser = subparsers.add_parser(
-        "check-deleted",
-        help="Check whether files in the local cache still exist under given path",
-    )
-    deleted_parser.add_argument(
-        "base_path", help="Base path of the media store directory"
-    )
-
-    update_parser = subparsers.add_parser(
-        "update",
-        help="Updates local cache. Equivalent to running update-db and"
-             " check-deleted",
-    )
-    update_parser.add_argument(
-        "base_path", help="Base path of the media store directory"
-    )
-    update_parser.add_argument(
-        "duration",
-        type=parse_duration,
-        help="Fetch rows that haven't been accessed in the duration given,"
-             " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-             " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
-    )
-    update_parser.add_argument(
-        "--homeserver-config-path",
-        help="Path to the yaml file containing Synapse's DB settings",
-        default="homeserver.yaml"
-    )
-
-    write_parser = subparsers.add_parser(
-        "write",
-        help="Outputs all file and directory paths in the local cache that we may not"
-             " have deleted. check-deleted should be run first to update cache.",
-    )
-    write_parser.add_argument(
-        "out",
-        type=argparse.FileType("w", encoding="UTF-8"),
-        default="-",
-        nargs="?",
-        help="File to output list to, or '-' for stdout",
-    )
-
-    upload_parser = subparsers.add_parser(
-        "upload", help="Uploads media to s3 based on local cache"
-    )
-    upload_parser.add_argument(
-        "base_path", help="Base path of the media store directory"
-    )
-    upload_parser.add_argument("bucket", help="S3 bucket to upload to")
-
-    upload_parser.add_argument("--prefix", help="Prefix of files in the bucket", default="")
-
-    upload_parser.add_argument(
-        "--storage-class",
-        help="S3 storage class to use",
-        nargs="?",
-        choices=[
-            "STANDARD",
-            "REDUCED_REDUNDANCY",
-            "STANDARD_IA",
-            "ONEZONE_IA",
-            "INTELLIGENT_TIERING",
-        ],
-        default="STANDARD",
-    )
-
-    upload_parser.add_argument(
-        "--sse-customer-key", help="SSE-C key to use",
-    )
-
-    upload_parser.add_argument(
-        "--sse-customer-algo",
-        help="Algorithm for SSE-C, only used if sse-customer-key is also specified",
-        default="AES256",
-    )
-
-    upload_parser.add_argument(
-        "--delete",
-        action="store_const",
-        const=True,
-        help="Deletes local copy from media store on succesful upload",
-    )
-
-    upload_parser.add_argument(
-        "--endpoint-url", help="S3 endpoint url to use", default=None
-    )
-
-    cleanup_parser = subparsers.add_parser(
-        "cleanup-remote",
-        help="Remove expired remote files due to media_retention setting from homeserver.yaml",
-    )
-    cleanup_parser.add_argument(
-        "--homeserver-config-path",
-        help="Path to the yaml file containing Synapse's settings",
-        default="homeserver.yaml"
-    )
-    cleanup_parser.add_argument("bucket", help="S3 bucket where media is stored")
-    cleanup_parser.add_argument("--prefix", help="Prefix of files in the bucket", default="")
-    cleanup_parser.add_argument(
-        "--endpoint-url", help="S3 endpoint url to use", default=None
-    )
-    cleanup_parser.add_argument(
-        "--sse-customer-key", help="SSE-C key to use",
-    )
-    cleanup_parser.add_argument(
-        "--sse-customer-algo",
-        help="Algorithm for SSE-C, only used if sse-customer-key is also specified",
-        default="AES256",
-    )
-    cleanup_parser.add_argument(
-        "--dry-run",
-        help="Test action",
-        action="store_true",
-        default=False
-    )
-
-    args = parser.parse_args()
-    if args.no_progress:
-        global progress
-        progress = False
-
-    if args.cmd == "write":
-        sqlite_conn = get_sqlite_conn(parser)
-        run_write(sqlite_conn, args.out)
-        return
-
-    if args.cmd == "update-db":
-        sqlite_conn = get_sqlite_conn(parser)
-        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        run_update_db(synapse_db_conn, sqlite_conn, args.duration)
-        return
-
-    if args.cmd == "check-deleted":
-        sqlite_conn = get_sqlite_conn(parser)
-        run_check_delete(sqlite_conn, args.base_path)
-        return
-
-    if args.cmd == "update":
-        sqlite_conn = get_sqlite_conn(parser)
-        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        run_update_db(synapse_db_conn, sqlite_conn, args.duration)
-        run_check_delete(sqlite_conn, args.base_path)
-        return
-
-    if args.cmd == "upload":
-        sqlite_conn = get_sqlite_conn(parser)
-        s3 = boto3.client("s3", endpoint_url=args.endpoint_url)
-
-        extra_args = {"StorageClass": args.storage_class}
-        if args.sse_customer_key:
-            extra_args["SSECustomerKey"] = args.sse_customer_key
-            if args.sse_customer_algo:
-                extra_args["SSECustomerAlgorithm"] = args.sse_customer_algo
-            else:
-                extra_args["SSECustomerAlgorithm"] = "AES256"
-
-        run_upload(
-            s3,
-            args.bucket,
-            sqlite_conn,
-            args.base_path,
-            args.prefix,
-            extra_args,
-            should_delete=args.delete,
-        )
-        return
-
-    if args.cmd == "cleanup-remote":
-        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        local_media_lifetime, remote_media_lifetime = get_homeserver_media_retention(parser, args.homeserver_config_path)
-
-        s3 = boto3.client("s3", endpoint_url=args.endpoint_url)
-        extra_args = {}
-        if args.sse_customer_key:
-            extra_args["SSECustomerKey"] = args.sse_customer_key
-            if args.sse_customer_algo:
-                extra_args["SSECustomerAlgorithm"] = args.sse_customer_algo
-            else:
-                extra_args["SSECustomerAlgorithm"] = "AES256"
-
-        run_remote_cleanup(
-            s3,
-            args.bucket,
-            args.prefix,
-            extra_args,
-            synapse_db_conn,
-            local_media_lifetime,
-            remote_media_lifetime,
-            args.dry_run
-        )
-        return
-
-    parser.error("Valid subcommand must be specified")
-
-
-if __name__ == "__main__":
-    main()
+            self.is_paused.clear()
