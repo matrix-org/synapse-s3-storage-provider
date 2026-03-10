@@ -27,6 +27,7 @@ from botocore.config import Config
 from twisted.internet import defer, reactor
 from twisted.python.failure import Failure
 from twisted.python.threadpool import ThreadPool
+from twisted.internet.threads import deferToThreadPool
 
 from synapse.logging.context import make_deferred_yieldable
 from synapse.module_api import ModuleApi, run_in_background
@@ -123,7 +124,8 @@ class S3StorageProviderBackend(StorageProvider):
     async def store_file(self, path, file_info):
         """See StorageProvider.store_file"""
 
-        return await self._module_api.defer_to_threadpool(
+        return await defer_to_threadpool(
+            reactor,
             self._s3_pool,
             self._get_s3_client().upload_file,
             Filename=os.path.join(self.cache_directory, path),
@@ -144,7 +146,8 @@ class S3StorageProviderBackend(StorageProvider):
         # coroutine returned by `defer_to_threadpool` is used, and therefore
         # actually run.
         run_in_background(
-            self._module_api.defer_to_threadpool,
+            deferToThreadPool,
+            reactor,
             self._s3_pool,
             s3_download_task,
             self._get_s3_client(),
