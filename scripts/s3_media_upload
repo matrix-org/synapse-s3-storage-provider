@@ -208,8 +208,20 @@ def run_write(sqlite_conn, output_file):
 
 
 def run_update_db(synapse_db_conn, sqlite_conn, before_date):
-    """Entry point for update-db command
+    """Entry point for update-db command.
+
+    Selects all the media items in the Synapse database which haven't been accessed
+    since `before_date`, and ensures it is present in our sqlite db.
     """
+
+    # SQL queries to select the media items from the Synapse db, with the
+    # columns we will need to insert into the sqlite db.
+    #
+    # We ORDER the results to match the UNIQUE index in the sqlite db, so that
+    # we can sync the results into the sqlite db with less random I/O. (It
+    # doesn't make much difference on the Synapse DB side, since it's going to
+    # be an index scan anyway). Empirically this increases the speed of syncing by
+    # about 50x.
 
     local_sql = """
         SELECT '', media_id, media_id
@@ -217,6 +229,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
         WHERE
             COALESCE(last_access_ts, created_ts) < %s
             AND url_cache IS NULL
+        ORDER BY media_id
     """
 
     remote_sql = """
@@ -224,6 +237,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
         FROM remote_media_cache
         WHERE
             COALESCE(last_access_ts, created_ts) < %s
+        ORDER BY media_origin, media_id
     """
 
     last_access_ts = int(before_date.timestamp() * 1000)
