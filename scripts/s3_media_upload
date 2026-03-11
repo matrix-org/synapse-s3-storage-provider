@@ -262,7 +262,10 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
                 )
 
             else:
-                with synapse_db_conn.cursor() as synapse_db_curs:
+                # We use a named (server-side) cursor, so that we don't have to wait
+                # for Postgres to send back all 200M items before we get started with
+                # the sync operation.
+                with synapse_db_conn.cursor('%s_items' % (mtype, )) as synapse_db_curs:
                     synapse_db_curs.execute(sql, (last_access_ts,))
                     update_count += update_db_process_rows(
                         mtype, sqlite_cur, synapse_db_curs
