@@ -237,17 +237,21 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
     with sqlite_conn:
         sqlite_cur = sqlite_conn.cursor()
 
-        if isinstance(synapse_db_conn, sqlite3.Connection):
-            synapse_db_curs = synapse_db_conn.cursor()
-            for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
+        for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
+            print("  Syncing", mtype, "media", flush=True)
+
+            if isinstance(synapse_db_conn, sqlite3.Connection):
+                synapse_db_curs = synapse_db_conn.cursor()
                 synapse_db_curs.execute(sql.replace("%s", "?"), (last_access_ts,))
                 update_count += update_db_process_rows(
                     mtype, sqlite_cur, synapse_db_curs
                 )
 
-        else:
-            with synapse_db_conn.cursor() as synapse_db_curs:
-                for sql, mtype in ((local_sql, "local"), (remote_sql, "remote")):
+            else:
+                # We use a named (server-side) cursor, so that we don't have to wait
+                # for Postgres to send back all 200M items before we get started with
+                # the sync operation.
+                with synapse_db_conn.cursor('%s_items' % (mtype, )) as synapse_db_curs:
                     synapse_db_curs.execute(sql, (last_access_ts,))
                     update_count += update_db_process_rows(
                         mtype, sqlite_cur, synapse_db_curs
