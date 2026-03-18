@@ -229,7 +229,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
     last_access_ts = int(before_date.timestamp() * 1000)
 
     print(
-        "Syncing files that haven't been accessed since:", before_date.isoformat(" "),
+        "Syncing files that haven't been accessed since:", before_date.isoformat(" "), flush=True,
     )
 
     update_count = 0
@@ -253,7 +253,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
                         mtype, sqlite_cur, synapse_db_curs
                     )
 
-    print("Synced", update_count, "new rows")
+    print("Synced", update_count, "new rows", flush=True)
 
     synapse_db_conn.close()
 
@@ -289,7 +289,7 @@ def run_check_delete(sqlite_conn, base_path):
         )
     else:
         it = get_not_deleted(sqlite_conn)
-        print("Checking on ", get_not_deleted_count(sqlite_conn), " undeleted files")
+        print("Checking on ", get_not_deleted_count(sqlite_conn), " undeleted files", flush=True)
 
     for origin, media_id, filesystem_id, m_type in it:
         local_files = get_local_files(base_path, origin, filesystem_id, m_type)
@@ -305,7 +305,7 @@ def run_check_delete(sqlite_conn, base_path):
             ((True, o, m) for o, m in deleted),
         )
 
-    print("Updated", len(deleted), "as deleted")
+    print("Updated", len(deleted), "as deleted", flush=True)
 
 
 def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete):
@@ -324,7 +324,7 @@ def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should
     if progress:
         it = tqdm.tqdm(get_not_deleted(sqlite_conn), unit="files", total=total)
     else:
-        print("Uploading ", total, " files")
+        print("Uploading ", total, " files", flush=True)
         it = get_not_deleted(sqlite_conn)
 
     for origin, media_id, filesystem_id, m_type in it:
@@ -348,7 +348,7 @@ def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should
                         local_path, bucket, key, ExtraArgs=extra_args,
                     )
                 except Exception as e:
-                    print("Failed to upload file %s: %s", local_path, e)
+                    print("Failed to upload file %s: %s", local_path, e, flush=True)
                     continue
 
                 media_uploaded_files += 1
@@ -387,7 +387,7 @@ def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should
     print("Uploaded", humanize.naturalsize(uploaded_bytes, gnu=True))
     print("Deleted", deleted_media, "media")
     print("Deleted", deleted_files, "files")
-    print("Deleted", humanize.naturalsize(deleted_bytes, gnu=True))
+    print("Deleted", humanize.naturalsize(deleted_bytes, gnu=True), flush=True)
 
 
 def get_sqlite_conn(parser):
@@ -466,7 +466,7 @@ def get_database_db_conn(parser):
     return synapse_db_conn
 
 def get_synapse_db_conn(parser, homeserver_config_path):
-    """Attempt to get a connection based on database.yaml or homeserver.yaml 
+    """Attempt to get a connection based on database.yaml or homeserver.yaml
     to Synapse's database, or exit.
     """
 
