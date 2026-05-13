@@ -103,7 +103,14 @@ Packaging and release
 
 For maintainers:
 
-1. Update the `__version__` in setup.py. Commit. Push.
+1. Update the `__version__` in setup.py. Then commit and push the changes:
+
+    ```
+    git add setup.py
+    git commit -m "vX.Y.Z"
+    git push
+    ```
+
 1. Create a signed tag and push that:
 
     ```
