@@ -18,6 +18,7 @@ setup(
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: Apache Software License",
     ],
+    python_requires='>=3.10, <4',
     py_modules=["s3_storage_provider"],
     scripts=["scripts/s3_media_upload"],
     install_requires=[
