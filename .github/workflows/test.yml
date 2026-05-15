@@ -6,6 +6,10 @@ on:
       - main
       - 'releases/*'
 
+permissions:
+  # In order to check out the repository.
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -4,6 +4,10 @@ on:
     types: ["published"]
   workflow_dispatch:
 
+permissions:
+  # In order to check out the repository.
+  contents: read
+
 jobs:
   build:
     runs-on: "ubuntu-latest"

@@ -4,6 +4,10 @@ on:
   issues:
     types: [ opened ]
 
+# This sets the permissions for the ephemeral GITHUB_TOKEN.
+# secrets.ELEMENT_BOT_TOKEN is used to authentication the project changes below.
+permissions: {}
+
 jobs:
   triage:
     uses: matrix-org/backend-meta/.github/workflows/triage-incoming.yml@18beaf3c8e536108bd04d18e6c3dc40ba3931e28 # v2.0.3

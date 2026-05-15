@@ -4,6 +4,10 @@ on:
   issues:
     types: [ labeled ]
 
+# This sets the permissions for the ephemeral GITHUB_TOKEN.
+# secrets.ELEMENT_BOT_TOKEN is used to authentication the project changes below.
+permissions: {}
+
 jobs:
   move_needs_info:
     name: Move X-Needs-Info on the triage board

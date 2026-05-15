@@ -8,6 +8,10 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  # In order to check out the repository.
+  contents: read
+
 jobs:
   lint:
     name: "Lint & Packaging"
