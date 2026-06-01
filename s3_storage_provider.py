@@ -30,7 +30,7 @@ from twisted.python.threadpool import ThreadPool
 
 from synapse.logging.context import make_deferred_yieldable
 from synapse.module_api import ModuleApi, run_in_background
-from synapse.rest.media.v1._base import Responder
+from synapse.rest.media.v1._base import FileInfo, Responder
 from synapse.rest.media.v1.storage_provider import StorageProvider
 
 logger = logging.getLogger("synapse.s3")
@@ -158,6 +158,22 @@ class S3StorageProviderBackend(StorageProvider):
         # opened. We only want to return to Synapse once we can start streaming
         # chunks.
         return await make_deferred_yieldable(d)
+
+    async def delete(self, path: str, file_info: FileInfo) -> None:
+        def inner():
+            if "SSECustomerKey" in self.extra_args and "SSECustomerAlgorithm" in self.extra_args:
+                self._get_s3_client().delete_object(
+                    Bucket=self.bucket,
+                    Key=self.prefix + path,
+                    SSECustomerKey=self.extra_args["SSECustomerKey"],
+                    SSECustomerAlgorithm=self.extra_args["SSECustomerAlgorithm"],
+                )
+            else:
+                self._get_s3_client().delete_object(
+                    Bucket=self.bucket,
+                    Key=self.prefix + path,
+                )
+        await run_in_background(inner)
 
     @staticmethod
     def parse_config(config):
