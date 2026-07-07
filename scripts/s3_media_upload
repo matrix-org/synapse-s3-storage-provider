@@ -64,6 +64,23 @@ def parse_duration(string):
     return then
 
 
+def to_ms(dt):
+    """Convert a datetime to milliseconds since the epoch, as used by Synapse."""
+    return int(dt.timestamp() * 1000)
+
+
+def synapse_execute(synapse_db_conn, sql, params):
+    """Execute a query against Synapse's database and return the cursor.
+
+    `sql` uses psycopg2-style %s placeholders, which are adapted for sqlite.
+    """
+    if isinstance(synapse_db_conn, sqlite3.Connection):
+        sql = sql.replace("%s", "?")
+    cur = synapse_db_conn.cursor()
+    cur.execute(sql, params)
+    return cur
+
+
 def mark_as_deleted(sqlite_conn, origin, media_id):
     with sqlite_conn:
         sqlite_conn.execute(
@@ -79,12 +96,10 @@ def get_not_deleted_count(sqlite_conn):
     """Get count of all rows in our cache that we don't think have been deleted"""
     cur = sqlite_conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT COALESCE(count(*), 0) FROM media
         WHERE NOT known_deleted
-        """
-    )
+        """)
     (count,) = cur.fetchone()
     return count
 
@@ -93,12 +108,10 @@ def get_not_deleted(sqlite_conn):
     """Get all rows in our cache that we don't think have been deleted"""
     cur = sqlite_conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT origin, media_id, filesystem_id, type FROM media
         WHERE NOT known_deleted
-        """
-    )
+        """)
     return cur
 
 
@@ -222,7 +235,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
             COALESCE(last_access_ts, created_ts) < %s
     """
 
-    last_access_ts = int(before_date.timestamp() * 1000)
+    last_access_ts = to_ms(before_date)
 
     print(
         "Syncing files that haven't been accessed since:",
@@ -239,8 +252,9 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
             print("  Syncing", mtype, "media", flush=True)
 
             if isinstance(synapse_db_conn, sqlite3.Connection):
-                synapse_db_curs = synapse_db_conn.cursor()
-                synapse_db_curs.execute(sql.replace("%s", "?"), (last_access_ts,))
+                synapse_db_curs = synapse_execute(
+                    synapse_db_conn, sql, (last_access_ts,)
+                )
                 update_count += update_db_process_rows(
                     mtype, sqlite_cur, synapse_db_curs
                 )
@@ -497,8 +511,18 @@ def main():
     )
     subparsers = parser.add_subparsers(help="command to run", dest="cmd")
 
+    # Common option for the commands that talk to Synapse's database.
+    db_config_parser = argparse.ArgumentParser(add_help=False)
+    db_config_parser.add_argument(
+        "--homeserver-config-path",
+        help="Path to the yaml file containing Synapse's DB settings",
+        default="homeserver.yaml",
+    )
+
     update_db_parser = subparsers.add_parser(
-        "update-db", help="Syncs rows from database to local cache"
+        "update-db",
+        parents=[db_config_parser],
+        help="Syncs rows from database to local cache",
     )
     update_db_parser.add_argument(
         "duration",
@@ -506,11 +530,6 @@ def main():
         help="Fetch rows that haven't been accessed in the duration given,"
         " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
         " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
-    )
-    update_db_parser.add_argument(
-        "--homeserver-config-path",
-        help="Path to the yaml file containing Synapse's DB settings",
-        default="homeserver.yaml",
     )
 
     deleted_parser = subparsers.add_parser(
@@ -523,6 +542,7 @@ def main():
 
     update_parser = subparsers.add_parser(
         "update",
+        parents=[db_config_parser],
         help="Updates local cache. Equivalent to running update-db and check-deleted",
     )
     update_parser.add_argument(
@@ -534,11 +554,6 @@ def main():
         help="Fetch rows that haven't been accessed in the duration given,"
         " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
         " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
-    )
-    update_parser.add_argument(
-        "--homeserver-config-path",
-        help="Path to the yaml file containing Synapse's DB settings",
-        default="homeserver.yaml",
     )
 
     write_parser = subparsers.add_parser(
