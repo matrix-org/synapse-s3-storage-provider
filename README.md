@@ -94,7 +94,11 @@ Synced 0 new rows
 100%|█████████████████████████████████████████████████████████████| 1074/1074 [00:33<00:00, 25.97files/s]
 Updated 0 as deleted
 
-> s3_media_upload upload /path/to/media/store matrix_s3_bucket_name --storage-class STANDARD_IA --delete
+# Upload (and, with --delete, remove locally) media not used within 2 months.
+# Each candidate's last-used time is checked against the database before it is
+# offloaded, so this also needs the database credentials.
+> s3_media_upload upload /path/to/media/store matrix_s3_bucket_name 2m --storage-class STANDARD_IA --delete
+Checking 1074 media
 # prepare to wait a long time
 ```
 

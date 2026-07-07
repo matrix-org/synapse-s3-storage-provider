@@ -28,6 +28,10 @@ SCHEMA = """
     CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted);
 """
 
+# How many media to look up in Synapse's database per query when checking
+# last-used times at upload time.
+CHUNK_SIZE = 1000
+
 progress = True
 
 
@@ -292,6 +296,56 @@ def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs):
     return update_count
 
 
+def get_last_used_from_synapse(synapse_db_conn, media_chunk):
+    """Look up when the given media was last used in Synapse's database.
+
+    `media_chunk` is a list of (origin, media_id, filesystem_id, type) rows
+    from our cache. Returns a dict mapping (origin, media_id) to the last-used
+    time in milliseconds since the epoch (last access, or creation if never
+    accessed). Media that no longer exists in Synapse's database is absent
+    from the result.
+    """
+    local_ids = [
+        media_id for _, media_id, _, m_type in media_chunk if m_type == "local"
+    ]
+    remote_keys = [
+        (origin, media_id)
+        for origin, media_id, _, m_type in media_chunk
+        if m_type != "local"
+    ]
+
+    last_used = {}
+
+    # Local media is keyed by media_id.
+    if local_ids:
+        placeholders = ", ".join("%s" for _ in local_ids)
+        cur = synapse_execute(
+            synapse_db_conn,
+            "SELECT media_id, COALESCE(last_access_ts, created_ts) "
+            "FROM local_media_repository "
+            "WHERE media_id IN (" + placeholders + ")",
+            tuple(local_ids),
+        )
+        for media_id, last_used_ts in cur:
+            last_used[("", media_id)] = last_used_ts
+
+    # Remote media is keyed by (media_origin, media_id).
+    if remote_keys:
+        placeholders = ", ".join("(%s, %s)" for _ in remote_keys)
+        params = tuple(value for key in remote_keys for value in key)
+        cur = synapse_execute(
+            synapse_db_conn,
+            "SELECT media_origin, media_id, COALESCE(last_access_ts, created_ts) "
+            "FROM remote_media_cache "
+            "WHERE (media_origin, media_id) IN (" + placeholders + ")",
+            params,
+        )
+        for origin, media_id, last_used_ts in cur:
+            last_used[(origin, media_id)] = last_used_ts
+
+    return last_used
+
+
 def run_check_delete(sqlite_conn, base_path):
     """Entry point for check-deleted command"""
     deleted = []
@@ -328,10 +382,24 @@ def run_check_delete(sqlite_conn, base_path):
 
 
 def run_upload(
-    s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete
+    s3,
+    bucket,
+    sqlite_conn,
+    synapse_db_conn,
+    base_path,
+    s3_prefix,
+    extra_args,
+    should_delete,
+    before_date,
 ):
     """Entry point for upload command"""
+    cutoff_ts = to_ms(before_date)
+
+    # Each candidate's current last-used time is checked against Synapse's
+    # database (by primary key, in chunks), so recently-accessed media is not
+    # offloaded.
     total = get_not_deleted_count(sqlite_conn)
+    print("Checking", total, "media", flush=True)
 
     uploaded_media = 0
     uploaded_files = 0
@@ -339,15 +407,34 @@ def run_upload(
     deleted_media = 0
     deleted_files = 0
     deleted_bytes = 0
+    still_used = 0
+
+    def verified_candidates():
+        """Yield candidate rows with their last-used time from Synapse."""
+        candidates_cur = get_not_deleted(sqlite_conn)
+        while True:
+            chunk = candidates_cur.fetchmany(CHUNK_SIZE)
+            if not chunk:
+                break
+            last_used = get_last_used_from_synapse(synapse_db_conn, chunk)
+            for row in chunk:
+                yield row, last_used.get((row[0], row[1]))
 
     # This is a progress bar
     if progress:
-        it = tqdm.tqdm(get_not_deleted(sqlite_conn), unit="files", total=total)
+        it = tqdm.tqdm(verified_candidates(), unit="files", total=total)
     else:
         print("Uploading ", total, " files", flush=True)
-        it = get_not_deleted(sqlite_conn)
+        it = verified_candidates()
 
-    for origin, media_id, filesystem_id, m_type in it:
+    for (origin, media_id, filesystem_id, m_type), last_used_ts in it:
+        # Media used since the cutoff stays local. A missing last-used time
+        # means the media is no longer in Synapse's database; it is offloaded
+        # anyway so its files don't linger on disk forever.
+        if last_used_ts is not None and last_used_ts >= cutoff_ts:
+            still_used += 1
+            continue
+
         local_files = get_local_files(base_path, origin, filesystem_id, m_type)
 
         if not local_files:
@@ -405,12 +492,21 @@ def run_upload(
             # Mark as deleted only if *all* the local files have been deleted
             mark_as_deleted(sqlite_conn, origin, media_id)
 
+    print(
+        "Skipped",
+        still_used,
+        "media used since",
+        before_date.isoformat(" "),
+        flush=True,
+    )
     print("Uploaded", uploaded_media, "media out of", total)
     print("Uploaded", uploaded_files, "files")
     print("Uploaded", humanize.naturalsize(uploaded_bytes, gnu=True))
     print("Deleted", deleted_media, "media")
     print("Deleted", deleted_files, "files")
     print("Deleted", humanize.naturalsize(deleted_bytes, gnu=True), flush=True)
+
+    synapse_db_conn.close()
 
 
 def get_sqlite_conn(parser):
@@ -570,13 +666,23 @@ def main():
     )
 
     upload_parser = subparsers.add_parser(
-        "upload", help="Uploads media to s3 based on local cache"
+        "upload",
+        parents=[db_config_parser],
+        help="Uploads media to s3 based on local cache",
     )
     upload_parser.add_argument(
         "base_path", help="Base path of the media store directory"
     )
     upload_parser.add_argument("bucket", help="S3 bucket to upload to")
-
+    upload_parser.add_argument(
+        "duration",
+        type=parse_duration,
+        help="Only upload (and, with --delete, remove locally) media that"
+        " hasn't been used within the duration given, e.g. 1m (one month)."
+        " Valid suffixes are s, h, d, m or y. Last-used times are checked"
+        " against Synapse's database, so the same DB config as update-db is"
+        " required.",
+    )
     upload_parser.add_argument(
         "--prefix", help="Prefix of files in the bucket", default=""
     )
@@ -647,6 +753,7 @@ def main():
 
     if args.cmd == "upload":
         sqlite_conn = get_sqlite_conn(parser)
+        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
         s3 = boto3.client("s3", endpoint_url=args.endpoint_url)
 
         extra_args = {"StorageClass": args.storage_class}
@@ -661,10 +768,12 @@ def main():
             s3,
             args.bucket,
             sqlite_conn,
+            synapse_db_conn,
             args.base_path,
             args.prefix,
             extra_args,
             should_delete=args.delete,
+            before_date=args.duration,
         )
         return
 
