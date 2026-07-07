@@ -21,12 +21,31 @@ SCHEMA = """
         type TEXT NOT NULL,
         -- indicates whether the media and all its thumbnails have been deleted from the
         -- local cache
-        known_deleted BOOLEAN NOT NULL
+        known_deleted BOOLEAN NOT NULL,
+        -- The time the media was created according to Synapse's database, in
+        -- milliseconds since the epoch. Immutable once set. NULL only for rows synced
+        -- by older versions of this script whose media has since been removed from
+        -- Synapse's database (update-db backfills it otherwise).
+        created_ts INTEGER
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS media_id_idx ON media(origin, media_id);
     CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted);
+    CREATE INDEX IF NOT EXISTS created_ts_idx ON media(created_ts);
+
+    -- Key/value store for script state, e.g. the incremental sync high-water mark.
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
 """
+
+# How far to rewind the incremental sync high-water mark between update-db runs.
+# This covers clock skew between the Synapse hosts writing created_ts and the
+# database server whose clock the mark is taken from, and Synapse transactions
+# that commit a row with a slightly-in-the-past created_ts after we queried.
+# Overlap is harmless: re-fetched rows are deduped on insert.
+SYNC_OVERLAP_MS = 60 * 60 * 1000
 
 # How many media to look up in Synapse's database per query when checking
 # last-used times at upload time.
@@ -85,6 +104,41 @@ def synapse_execute(synapse_db_conn, sql, params):
     return cur
 
 
+def ensure_cache_columns(sqlite_conn):
+    """Add columns to media caches created before the columns existed.
+
+    Must run before the schema script, which indexes created_ts.
+    """
+    cur = sqlite_conn.execute("PRAGMA table_info(media)")
+    columns = [row[1] for row in cur]
+    # An empty list means the table doesn't exist yet; the schema script will
+    # create it with the columns included.
+    if not columns:
+        return
+    for column in ("created_ts",):
+        if column not in columns:
+            with sqlite_conn:
+                sqlite_conn.execute(
+                    "ALTER TABLE media ADD COLUMN %s INTEGER" % (column,)
+                )
+
+
+def get_setting(sqlite_conn, key):
+    """Read a value from the settings table, or None if it is unset."""
+    cur = sqlite_conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def set_setting(sqlite_conn, key, value):
+    """Store a value in the settings table."""
+    with sqlite_conn:
+        sqlite_conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, str(value)),
+        )
+
+
 def mark_as_deleted(sqlite_conn, origin, media_id):
     with sqlite_conn:
         sqlite_conn.execute(
@@ -96,27 +150,44 @@ def mark_as_deleted(sqlite_conn, origin, media_id):
         )
 
 
-def get_not_deleted_count(sqlite_conn):
-    """Get count of all rows in our cache that we don't think have been deleted"""
-    cur = sqlite_conn.cursor()
+def not_deleted_filter(created_before_ts=None):
+    """Build the WHERE clause and params selecting undeleted cache rows.
 
-    cur.execute("""
-        SELECT COALESCE(count(*), 0) FROM media
-        WHERE NOT known_deleted
-        """)
+    If `created_before_ts` is given, only matches media created before that time
+    (in milliseconds since the epoch). Media without a recorded creation time
+    (synced by an older version of this script) is treated as old and included.
+    """
+    where = "NOT known_deleted"
+    params = ()
+    if created_before_ts is not None:
+        where += " AND (created_ts < ? OR created_ts IS NULL)"
+        params = (created_before_ts,)
+    return where, params
+
+
+def get_not_deleted_count(sqlite_conn, created_before_ts=None):
+    """Get count of all rows in our cache that we don't think have been deleted.
+
+    See `not_deleted_filter` for the meaning of `created_before_ts`.
+    """
+    where, params = not_deleted_filter(created_before_ts)
+    cur = sqlite_conn.execute(
+        "SELECT COALESCE(count(*), 0) FROM media WHERE " + where, params
+    )
     (count,) = cur.fetchone()
     return count
 
 
-def get_not_deleted(sqlite_conn):
-    """Get all rows in our cache that we don't think have been deleted"""
-    cur = sqlite_conn.cursor()
+def get_not_deleted(sqlite_conn, created_before_ts=None):
+    """Get all rows in our cache that we don't think have been deleted.
 
-    cur.execute("""
-        SELECT origin, media_id, filesystem_id, type FROM media
-        WHERE NOT known_deleted
-        """)
-    return cur
+    See `not_deleted_filter` for the meaning of `created_before_ts`.
+    """
+    where, params = not_deleted_filter(created_before_ts)
+    return sqlite_conn.execute(
+        "SELECT origin, media_id, filesystem_id, type FROM media WHERE " + where,
+        params,
+    )
 
 
 def to_path(origin, filesystem_id, m_type):
@@ -209,9 +280,12 @@ def check_file_in_s3(s3, bucket, key, extra_args):
     return True
 
 
-def run_write(sqlite_conn, output_file):
+def run_write(sqlite_conn, output_file, before_date=None):
     """Entry point for write command"""
-    for origin, _, filesystem_id, m_type in get_not_deleted(sqlite_conn):
+    created_before_ts = to_ms(before_date) if before_date is not None else None
+    for origin, _, filesystem_id, m_type in get_not_deleted(
+        sqlite_conn, created_before_ts
+    ):
         file_path = to_path(origin, filesystem_id, m_type)
         print(file_path, file=output_file)
 
@@ -221,33 +295,65 @@ def run_write(sqlite_conn, output_file):
         print(thumbnail_path, file=output_file)
 
 
-def run_update_db(synapse_db_conn, sqlite_conn, before_date):
-    """Entry point for update-db command"""
+def get_synapse_db_now_ms(synapse_db_conn):
+    """Get the current time according to Synapse's database, in ms since epoch.
+
+    Media timestamps are written using the Synapse hosts' clocks, so the
+    incremental sync high-water mark must be based on them rather than on this
+    machine's clock.
+    """
+    if isinstance(synapse_db_conn, sqlite3.Connection):
+        # A sqlite database lives on the same machine as Synapse, which we
+        # assume is this one (there is no server clock to ask).
+        return to_ms(datetime.datetime.now())
+
+    cur = synapse_db_conn.cursor()
+    cur.execute("SELECT EXTRACT(EPOCH FROM now()) * 1000")
+    return int(cur.fetchone()[0])
+
+
+def run_update_db(synapse_db_conn, sqlite_conn):
+    """Entry point for update-db command.
+
+    Incrementally syncs newly-created media from Synapse's database into the
+    local cache. Note that Synapse does not index created_ts, so this still
+    scans the media tables, but only rows created since the last run are
+    shipped and processed; operators of large deployments can add indexes on
+    created_ts to avoid the scans entirely.
+    """
+
+    # Fetch everything created since the last run. INSERT OR IGNORE dedupes
+    # the `>=` boundary overlap and the SYNC_OVERLAP_MS rewind.
+    last_created_ts = int(get_setting(sqlite_conn, "last_created_ts") or 0)
+    # The next high-water mark. Taken from Synapse's clock before the queries
+    # run, so anything created while they run is picked up next time, and
+    # rewound to cover rows that commit with a slightly-in-the-past created_ts.
+    next_created_ts = max(get_synapse_db_now_ms(synapse_db_conn) - SYNC_OVERLAP_MS, 0)
 
     local_sql = """
-        SELECT '', media_id, media_id
+        SELECT '', media_id, media_id, created_ts
         FROM local_media_repository
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
-            AND url_cache IS NULL
+        WHERE created_ts >= %s AND url_cache IS NULL
     """
 
     remote_sql = """
-        SELECT media_origin, media_id, filesystem_id
+        SELECT media_origin, media_id, filesystem_id, created_ts
         FROM remote_media_cache
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
+        WHERE created_ts >= %s
     """
 
-    last_access_ts = to_ms(before_date)
-
     print(
-        "Syncing files that haven't been accessed since:",
-        before_date.isoformat(" "),
+        "Syncing media created since:",
+        datetime.datetime.fromtimestamp(last_created_ts / 1000).isoformat(" "),
         flush=True,
     )
 
     update_count = 0
+
+    # Only the first run (high-water mark unset) can encounter rows synced by
+    # older versions of this script that lack a creation time; skip the
+    # backfill query for every re-fetched row on later runs.
+    backfill = last_created_ts == 0
 
     with sqlite_conn:
         sqlite_cur = sqlite_conn.cursor()
@@ -257,10 +363,10 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
 
             if isinstance(synapse_db_conn, sqlite3.Connection):
                 synapse_db_curs = synapse_execute(
-                    synapse_db_conn, sql, (last_access_ts,)
+                    synapse_db_conn, sql, (last_created_ts,)
                 )
                 update_count += update_db_process_rows(
-                    mtype, sqlite_cur, synapse_db_curs
+                    mtype, sqlite_cur, synapse_db_curs, backfill
                 )
 
             else:
@@ -268,30 +374,47 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
                 # for Postgres to send back all 200M items before we get started with
                 # the sync operation.
                 with synapse_db_conn.cursor("%s_items" % (mtype,)) as synapse_db_curs:
-                    synapse_db_curs.execute(sql, (last_access_ts,))
+                    synapse_db_curs.execute(sql, (last_created_ts,))
                     update_count += update_db_process_rows(
-                        mtype, sqlite_cur, synapse_db_curs
+                        mtype, sqlite_cur, synapse_db_curs, backfill
                     )
+
+    # Only advance the high-water mark once the inserts above have committed.
+    set_setting(sqlite_conn, "last_created_ts", next_created_ts)
 
     print("Synced", update_count, "new rows", flush=True)
 
     synapse_db_conn.close()
 
 
-def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs):
-    """Process rows extracted from Synapse's database and insert them in cache"""
+def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs, backfill):
+    """Process rows extracted from Synapse's database and insert them in cache.
+
+    If `backfill` is set, rows that already exist in the cache (written by an
+    older version of this script that didn't record creation times) get their
+    created_ts filled in.
+    """
     update_count = 0
 
-    for origin, media_id, filesystem_id in synapse_db_curs:
+    for origin, media_id, filesystem_id, created_ts in synapse_db_curs:
         sqlite_cur.execute(
             """
             INSERT OR IGNORE INTO media
-            (origin, media_id, filesystem_id, type, known_deleted)
-            VALUES (?, ?, ?, ?, ?)
+            (origin, media_id, filesystem_id, type, known_deleted, created_ts)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (origin, media_id, filesystem_id, mtype, False),
+            (origin, media_id, filesystem_id, mtype, False, created_ts),
         )
-        update_count += sqlite_cur.rowcount
+        if sqlite_cur.rowcount:
+            update_count += 1
+        elif backfill:
+            sqlite_cur.execute(
+                """
+                UPDATE media SET created_ts = ?
+                WHERE origin = ? AND media_id = ? AND created_ts IS NULL
+                """,
+                (created_ts, origin, media_id),
+            )
 
     return update_count
 
@@ -395,11 +518,18 @@ def run_upload(
     """Entry point for upload command"""
     cutoff_ts = to_ms(before_date)
 
-    # Each candidate's current last-used time is checked against Synapse's
-    # database (by primary key, in chunks), so recently-accessed media is not
-    # offloaded.
-    total = get_not_deleted_count(sqlite_conn)
-    print("Checking", total, "media", flush=True)
+    # Media created before the cutoff are candidates: nothing younger can have
+    # been unused for long enough, since last-used >= created. Each candidate's
+    # current last-used time is then checked against Synapse's database (by
+    # primary key, in chunks), so recently-accessed media is not offloaded.
+    total = get_not_deleted_count(sqlite_conn, cutoff_ts)
+    print(
+        "Checking",
+        total,
+        "media created before",
+        before_date.isoformat(" "),
+        flush=True,
+    )
 
     uploaded_media = 0
     uploaded_files = 0
@@ -411,7 +541,7 @@ def run_upload(
 
     def verified_candidates():
         """Yield candidate rows with their last-used time from Synapse."""
-        candidates_cur = get_not_deleted(sqlite_conn)
+        candidates_cur = get_not_deleted(sqlite_conn, cutoff_ts)
         while True:
             chunk = candidates_cur.fetchmany(CHUNK_SIZE)
             if not chunk:
@@ -513,6 +643,7 @@ def get_sqlite_conn(parser):
     """Attempt to get a sqlite connection to cache.db, or exit."""
     try:
         sqlite_conn = sqlite3.connect("cache.db")
+        ensure_cache_columns(sqlite_conn)
         sqlite_conn.executescript(SCHEMA)
     except sqlite3.Error as e:
         parser.error("Could not open 'cache.db' as sqlite DB: %s" % (e,))
@@ -618,16 +749,9 @@ def main():
     update_db_parser = subparsers.add_parser(
         "update-db",
         parents=[db_config_parser],
-        help="Syncs rows from database to local cache",
+        help="Syncs media created since the last run from the database to the"
+        " local cache",
     )
-    update_db_parser.add_argument(
-        "duration",
-        type=parse_duration,
-        help="Fetch rows that haven't been accessed in the duration given,"
-        " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
-    )
-
     deleted_parser = subparsers.add_parser(
         "check-deleted",
         help="Check whether files in the local cache still exist under given path",
@@ -644,14 +768,6 @@ def main():
     update_parser.add_argument(
         "base_path", help="Base path of the media store directory"
     )
-    update_parser.add_argument(
-        "duration",
-        type=parse_duration,
-        help="Fetch rows that haven't been accessed in the duration given,"
-        " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
-    )
-
     write_parser = subparsers.add_parser(
         "write",
         help="Outputs all file and directory paths in the local cache that we may not"
@@ -663,6 +779,14 @@ def main():
         default="-",
         nargs="?",
         help="File to output list to, or '-' for stdout",
+    )
+    write_parser.add_argument(
+        "--older-than",
+        type=parse_duration,
+        default=None,
+        help="Only list media created longer ago than the duration given, e.g."
+        " 1m (one month). Valid suffixes are s, h, d, m or y. Note this only"
+        " considers creation times, not when media was last used.",
     )
 
     upload_parser = subparsers.add_parser(
@@ -730,13 +854,13 @@ def main():
 
     if args.cmd == "write":
         sqlite_conn = get_sqlite_conn(parser)
-        run_write(sqlite_conn, args.out)
+        run_write(sqlite_conn, args.out, before_date=args.older_than)
         return
 
     if args.cmd == "update-db":
         sqlite_conn = get_sqlite_conn(parser)
         synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        run_update_db(synapse_db_conn, sqlite_conn, args.duration)
+        run_update_db(synapse_db_conn, sqlite_conn)
         return
 
     if args.cmd == "check-deleted":
@@ -747,7 +871,7 @@ def main():
     if args.cmd == "update":
         sqlite_conn = get_sqlite_conn(parser)
         synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        run_update_db(synapse_db_conn, sqlite_conn, args.duration)
+        run_update_db(synapse_db_conn, sqlite_conn)
         run_check_delete(sqlite_conn, args.base_path)
         return
 
