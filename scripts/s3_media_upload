@@ -26,7 +26,12 @@ SCHEMA = """
         -- milliseconds since the epoch. Immutable once set. NULL only for rows synced
         -- by older versions of this script whose media has since been removed from
         -- Synapse's database (update-db backfills it otherwise).
-        created_ts INTEGER
+        created_ts INTEGER,
+        -- A lower bound on the time the media was last used, in milliseconds since
+        -- the epoch, cached from previous upload runs. Since last-used times only
+        -- increase, a cached value newer than a cutoff proves the media is still in
+        -- use without querying Synapse again. NULL if never checked.
+        last_used_ts INTEGER
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS media_id_idx ON media(origin, media_id);
@@ -115,7 +120,7 @@ def ensure_cache_columns(sqlite_conn):
     # create it with the columns included.
     if not columns:
         return
-    for column in ("created_ts",):
+    for column in ("created_ts", "last_used_ts"):
         if column not in columns:
             with sqlite_conn:
                 sqlite_conn.execute(
@@ -519,10 +524,21 @@ def run_upload(
     cutoff_ts = to_ms(before_date)
 
     # Media created before the cutoff are candidates: nothing younger can have
-    # been unused for long enough, since last-used >= created. Each candidate's
-    # current last-used time is then checked against Synapse's database (by
-    # primary key, in chunks), so recently-accessed media is not offloaded.
-    total = get_not_deleted_count(sqlite_conn, cutoff_ts)
+    # been unused for long enough, since last-used >= created. Media whose
+    # cached last-used time is newer than the cutoff is provably still in use
+    # (last-used times only increase) and excluded up front. Each remaining
+    # candidate's current last-used time is then checked against Synapse's
+    # database (by primary key, in chunks), so recently-accessed media is not
+    # offloaded.
+    candidate_where, candidate_params = not_deleted_filter(cutoff_ts)
+    candidate_where += " AND (last_used_ts IS NULL OR last_used_ts < ?)"
+    candidate_params += (cutoff_ts,)
+
+    cur = sqlite_conn.execute(
+        "SELECT COALESCE(count(*), 0) FROM media WHERE " + candidate_where,
+        candidate_params,
+    )
+    (total,) = cur.fetchone()
     print(
         "Checking",
         total,
@@ -541,12 +557,24 @@ def run_upload(
 
     def verified_candidates():
         """Yield candidate rows with their last-used time from Synapse."""
-        candidates_cur = get_not_deleted(sqlite_conn, cutoff_ts)
+        candidates_cur = sqlite_conn.execute(
+            "SELECT origin, media_id, filesystem_id, type FROM media WHERE "
+            + candidate_where,
+            candidate_params,
+        )
         while True:
             chunk = candidates_cur.fetchmany(CHUNK_SIZE)
             if not chunk:
                 break
             last_used = get_last_used_from_synapse(synapse_db_conn, chunk)
+            # Cache the observed last-used times so future runs can skip
+            # still-used media without asking Synapse again.
+            with sqlite_conn:
+                sqlite_conn.executemany(
+                    "UPDATE media SET last_used_ts = ? "
+                    "WHERE origin = ? AND media_id = ?",
+                    [(ts, o, m) for (o, m), ts in last_used.items()],
+                )
             for row in chunk:
                 yield row, last_used.get((row[0], row[1]))
 
