@@ -86,15 +86,18 @@ More options are available in the command help.
 # contain PG credentials
 > ls
 cache.db database.yaml
-# Update cache from /path/to/media/store looking for files not used
-# within 2 months
-> s3_media_upload update /path/to/media/store 2m
-Syncing files that haven't been accessed since: 2018-10-18 11:06:21.520602
+# Update the cache from /path/to/media/store. This incrementally syncs media
+# created since the last run and records when each file was last used.
+> s3_media_upload update /path/to/media/store
+Syncing media created since: 2018-10-18 11:06:21.520602
 Synced 0 new rows
+Refreshing last-used timestamps
+Recorded last-used time for 1074 media
 100%|█████████████████████████████████████████████████████████████| 1074/1074 [00:33<00:00, 25.97files/s]
 Updated 0 as deleted
 
-> s3_media_upload upload /path/to/media/store matrix_s3_bucket_name --storage-class STANDARD_IA --delete
+# Upload (and, with --delete, remove locally) media not used within 2 months
+> s3_media_upload upload /path/to/media/store matrix_s3_bucket_name 2m --storage-class STANDARD_IA --delete
 # prepare to wait a long time
 ```
 

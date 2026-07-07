@@ -21,11 +21,21 @@ SCHEMA = """
         type TEXT NOT NULL,
         -- indicates whether the media and all its thumbnails have been deleted from the
         -- local cache
-        known_deleted BOOLEAN NOT NULL
+        known_deleted BOOLEAN NOT NULL,
+        -- The time the media was last used (last accessed, or created if it has never
+        -- been accessed), in milliseconds since the epoch. NULL until fetched from
+        -- Synapse's database by update-db.
+        last_used_ts INTEGER
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS media_id_idx ON media(origin, media_id);
     CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted);
+
+    -- Key/value store for script state, e.g. the incremental sync high-water mark.
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
 """
 
 progress = True
@@ -64,6 +74,41 @@ def parse_duration(string):
     return then
 
 
+def chunked(iterable, size):
+    """Yield successive lists of at most `size` items from `iterable`."""
+    items = list(iterable)
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def ensure_last_used_ts_column(sqlite_conn):
+    """Add the last_used_ts column to caches created before it existed."""
+    cur = sqlite_conn.execute("PRAGMA table_info(media)")
+    columns = [row[1] for row in cur]
+    if "last_used_ts" not in columns:
+        with sqlite_conn:
+            sqlite_conn.execute("ALTER TABLE media ADD COLUMN last_used_ts INTEGER")
+
+
+def get_setting(sqlite_conn, key):
+    """Read a value from the settings table, or None if it is unset."""
+    cur = sqlite_conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def set_setting(sqlite_conn, key, value):
+    """Store a value in the settings table."""
+    with sqlite_conn:
+        sqlite_conn.execute(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, str(value)),
+        )
+
+
 def mark_as_deleted(sqlite_conn, origin, media_id):
     with sqlite_conn:
         sqlite_conn.execute(
@@ -75,30 +120,62 @@ def mark_as_deleted(sqlite_conn, origin, media_id):
         )
 
 
-def get_not_deleted_count(sqlite_conn):
-    """Get count of all rows in our cache that we don't think have been deleted"""
+def get_not_deleted_count(sqlite_conn, before_ts=None):
+    """Get count of all rows in our cache that we don't think have been deleted.
+
+    If `before_ts` is given, only counts media last used before that time (in
+    milliseconds since the epoch), excluding media without a recorded last-used
+    time.
+    """
     cur = sqlite_conn.cursor()
 
-    cur.execute(
-        """
-        SELECT COALESCE(count(*), 0) FROM media
-        WHERE NOT known_deleted
-        """
-    )
+    if before_ts is None:
+        cur.execute(
+            """
+            SELECT COALESCE(count(*), 0) FROM media
+            WHERE NOT known_deleted
+            """
+        )
+    else:
+        cur.execute(
+            """
+            SELECT COALESCE(count(*), 0) FROM media
+            WHERE NOT known_deleted
+                AND last_used_ts IS NOT NULL
+                AND last_used_ts < ?
+            """,
+            (before_ts,),
+        )
     (count,) = cur.fetchone()
     return count
 
 
-def get_not_deleted(sqlite_conn):
-    """Get all rows in our cache that we don't think have been deleted"""
+def get_not_deleted(sqlite_conn, before_ts=None):
+    """Get all rows in our cache that we don't think have been deleted.
+
+    If `before_ts` is given, only returns media last used before that time (in
+    milliseconds since the epoch), excluding media without a recorded last-used
+    time.
+    """
     cur = sqlite_conn.cursor()
 
-    cur.execute(
-        """
-        SELECT origin, media_id, filesystem_id, type FROM media
-        WHERE NOT known_deleted
-        """
-    )
+    if before_ts is None:
+        cur.execute(
+            """
+            SELECT origin, media_id, filesystem_id, type FROM media
+            WHERE NOT known_deleted
+            """
+        )
+    else:
+        cur.execute(
+            """
+            SELECT origin, media_id, filesystem_id, type FROM media
+            WHERE NOT known_deleted
+                AND last_used_ts IS NOT NULL
+                AND last_used_ts < ?
+            """,
+            (before_ts,),
+        )
     return cur
 
 
@@ -204,29 +281,34 @@ def run_write(sqlite_conn, output_file):
         print(thumbnail_path, file=output_file)
 
 
-def run_update_db(synapse_db_conn, sqlite_conn, before_date):
-    """Entry point for update-db command"""
+def run_update_db(synapse_db_conn, sqlite_conn):
+    """Entry point for update-db command.
+
+    Incrementally syncs newly-created media from Synapse's database into the
+    local cache (using the indexed created_ts column), then refreshes the
+    recorded last_used_ts for all media we don't think has been deleted.
+    """
+
+    # Phase A: fetch everything created since the last run. This uses the index
+    # on created_ts, and INSERT OR IGNORE dedupes the `>=` boundary overlap.
+    last_created_ts = int(get_setting(sqlite_conn, "last_created_ts") or 0)
+    run_started_ts = int(datetime.datetime.now().timestamp() * 1000)
 
     local_sql = """
         SELECT '', media_id, media_id
         FROM local_media_repository
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
-            AND url_cache IS NULL
+        WHERE created_ts >= %s AND url_cache IS NULL
     """
 
     remote_sql = """
         SELECT media_origin, media_id, filesystem_id
         FROM remote_media_cache
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
+        WHERE created_ts >= %s
     """
 
-    last_access_ts = int(before_date.timestamp() * 1000)
-
     print(
-        "Syncing files that haven't been accessed since:",
-        before_date.isoformat(" "),
+        "Syncing media created since:",
+        datetime.datetime.fromtimestamp(last_created_ts / 1000).isoformat(" "),
         flush=True,
     )
 
@@ -240,7 +322,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
 
             if isinstance(synapse_db_conn, sqlite3.Connection):
                 synapse_db_curs = synapse_db_conn.cursor()
-                synapse_db_curs.execute(sql.replace("%s", "?"), (last_access_ts,))
+                synapse_db_curs.execute(sql.replace("%s", "?"), (last_created_ts,))
                 update_count += update_db_process_rows(
                     mtype, sqlite_cur, synapse_db_curs
                 )
@@ -250,14 +332,91 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
                 # for Postgres to send back all 200M items before we get started with
                 # the sync operation.
                 with synapse_db_conn.cursor("%s_items" % (mtype,)) as synapse_db_curs:
-                    synapse_db_curs.execute(sql, (last_access_ts,))
+                    synapse_db_curs.execute(sql, (last_created_ts,))
                     update_count += update_db_process_rows(
                         mtype, sqlite_cur, synapse_db_curs
                     )
 
+    # Only advance the high-water mark once the inserts above have committed.
+    set_setting(sqlite_conn, "last_created_ts", run_started_ts)
+
     print("Synced", update_count, "new rows", flush=True)
 
+    # Phase B: refresh last_used_ts for all media we don't think has been
+    # deleted, so the upload command can decide what is old enough to offload.
+    print("Refreshing last-used timestamps", flush=True)
+    updated = update_db_record_last_used(synapse_db_conn, sqlite_conn)
+    print("Recorded last-used time for", updated, "media", flush=True)
+
     synapse_db_conn.close()
+
+
+def update_db_record_last_used(synapse_db_conn, sqlite_conn):
+    """Fetch and store last_used_ts for all cache media not marked deleted.
+
+    We only look up media we don't think has been deleted, and query Synapse's
+    database by primary key (in chunks) rather than scanning the whole table.
+    Returns the number of media rows updated.
+    """
+    # psycopg2 uses %s placeholders, sqlite3 uses ?.
+    ph = "?" if isinstance(synapse_db_conn, sqlite3.Connection) else "%s"
+
+    # Gather the media we care about, split by type.
+    local_ids = []
+    remote_keys = []
+    cur = sqlite_conn.execute(
+        "SELECT origin, media_id, type FROM media WHERE NOT known_deleted"
+    )
+    for origin, media_id, m_type in cur:
+        if m_type == "local":
+            local_ids.append(media_id)
+        else:
+            remote_keys.append((origin, media_id))
+
+    synapse_cur = synapse_db_conn.cursor()
+    updated = 0
+
+    # Local media is keyed by media_id.
+    for chunk in chunked(local_ids, 1000):
+        placeholders = ", ".join(ph for _ in chunk)
+        synapse_cur.execute(
+            "SELECT media_id, COALESCE(last_access_ts, created_ts) "
+            "FROM local_media_repository "
+            "WHERE media_id IN (%s)" % (placeholders,),
+            tuple(chunk),
+        )
+        rows = synapse_cur.fetchall()
+        with sqlite_conn:
+            for media_id, last_used_ts in rows:
+                sqlite_conn.execute(
+                    "UPDATE media SET last_used_ts = ? "
+                    "WHERE origin = ? AND media_id = ?",
+                    (last_used_ts, "", media_id),
+                )
+                updated += 1
+
+    # Remote media is keyed by (media_origin, media_id).
+    for chunk in chunked(remote_keys, 1000):
+        row_placeholder = "(%s, %s)" % (ph, ph)
+        placeholders = ", ".join(row_placeholder for _ in chunk)
+        params = tuple(value for key in chunk for value in key)
+        synapse_cur.execute(
+            "SELECT media_origin, media_id, COALESCE(last_access_ts, created_ts) "
+            "FROM remote_media_cache "
+            "WHERE (media_origin, media_id) IN (%s)" % (placeholders,),
+            params,
+        )
+        rows = synapse_cur.fetchall()
+        with sqlite_conn:
+            for origin, media_id, last_used_ts in rows:
+                sqlite_conn.execute(
+                    "UPDATE media SET last_used_ts = ? "
+                    "WHERE origin = ? AND media_id = ?",
+                    (last_used_ts, origin, media_id),
+                )
+                updated += 1
+
+    return updated
 
 
 def update_db_process_rows(mtype, sqlite_cur, synapse_db_curs):
@@ -314,10 +473,23 @@ def run_check_delete(sqlite_conn, base_path):
 
 
 def run_upload(
-    s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete
+    s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete, before_date
 ):
     """Entry point for upload command"""
-    total = get_not_deleted_count(sqlite_conn)
+    cutoff_ts = int(before_date.timestamp() * 1000)
+    total = get_not_deleted_count(sqlite_conn, cutoff_ts)
+
+    # Media that is not eligible this run: either used since the cutoff or
+    # without a recorded last-used time yet (a later update-db will record it).
+    skipped = get_not_deleted_count(sqlite_conn) - total
+    if skipped:
+        print(
+            skipped,
+            "media used since",
+            before_date.isoformat(" "),
+            "or without a recorded last-used time will be skipped",
+            flush=True,
+        )
 
     uploaded_media = 0
     uploaded_files = 0
@@ -328,10 +500,12 @@ def run_upload(
 
     # This is a progress bar
     if progress:
-        it = tqdm.tqdm(get_not_deleted(sqlite_conn), unit="files", total=total)
+        it = tqdm.tqdm(
+            get_not_deleted(sqlite_conn, cutoff_ts), unit="files", total=total
+        )
     else:
         print("Uploading ", total, " files", flush=True)
-        it = get_not_deleted(sqlite_conn)
+        it = get_not_deleted(sqlite_conn, cutoff_ts)
 
     for origin, media_id, filesystem_id, m_type in it:
         local_files = get_local_files(base_path, origin, filesystem_id, m_type)
@@ -404,6 +578,7 @@ def get_sqlite_conn(parser):
     try:
         sqlite_conn = sqlite3.connect("cache.db")
         sqlite_conn.executescript(SCHEMA)
+        ensure_last_used_ts_column(sqlite_conn)
     except sqlite3.Error as e:
         parser.error("Could not open 'cache.db' as sqlite DB: %s" % (e,))
 
@@ -498,14 +673,9 @@ def main():
     subparsers = parser.add_subparsers(help="command to run", dest="cmd")
 
     update_db_parser = subparsers.add_parser(
-        "update-db", help="Syncs rows from database to local cache"
-    )
-    update_db_parser.add_argument(
-        "duration",
-        type=parse_duration,
-        help="Fetch rows that haven't been accessed in the duration given,"
-        " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
+        "update-db",
+        help="Syncs media created since the last run from the database to the"
+        " local cache, and records when each undeleted media was last used",
     )
     update_db_parser.add_argument(
         "--homeserver-config-path",
@@ -527,13 +697,6 @@ def main():
     )
     update_parser.add_argument(
         "base_path", help="Base path of the media store directory"
-    )
-    update_parser.add_argument(
-        "duration",
-        type=parse_duration,
-        help="Fetch rows that haven't been accessed in the duration given,"
-        " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
     )
     update_parser.add_argument(
         "--homeserver-config-path",
@@ -561,6 +724,14 @@ def main():
         "base_path", help="Base path of the media store directory"
     )
     upload_parser.add_argument("bucket", help="S3 bucket to upload to")
+    upload_parser.add_argument(
+        "duration",
+        type=parse_duration,
+        help="Only upload (and, with --delete, remove locally) media that"
+        " hasn't been used within the duration given, e.g. 1m (one month)."
+        " Valid suffixes are s, h, d, m or y. Media without a last-used time"
+        " recorded by update-db is skipped.",
+    )
 
     upload_parser.add_argument(
         "--prefix", help="Prefix of files in the bucket", default=""
@@ -615,7 +786,7 @@ def main():
     if args.cmd == "update-db":
         sqlite_conn = get_sqlite_conn(parser)
         synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        run_update_db(synapse_db_conn, sqlite_conn, args.duration)
+        run_update_db(synapse_db_conn, sqlite_conn)
         return
 
     if args.cmd == "check-deleted":
@@ -626,7 +797,7 @@ def main():
     if args.cmd == "update":
         sqlite_conn = get_sqlite_conn(parser)
         synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
-        run_update_db(synapse_db_conn, sqlite_conn, args.duration)
+        run_update_db(synapse_db_conn, sqlite_conn)
         run_check_delete(sqlite_conn, args.base_path)
         return
 
@@ -650,6 +821,7 @@ def main():
             args.prefix,
             extra_args,
             should_delete=args.delete,
+            before_date=args.duration,
         )
         return
 
