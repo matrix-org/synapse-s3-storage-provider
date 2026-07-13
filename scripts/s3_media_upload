@@ -13,20 +13,20 @@ import yaml
 
 # Schema for our sqlite database cache
 SCHEMA = """
-    CREATE TABLE IF NOT EXISTS media (
-        origin TEXT NOT NULL,  -- empty string if local media
-        media_id TEXT NOT NULL,
-        filesystem_id TEXT NOT NULL,
-        -- Type is "local" or "remote"
-        type TEXT NOT NULL,
-        -- indicates whether the media and all its thumbnails have been deleted from the
-        -- local cache
-        known_deleted BOOLEAN NOT NULL
-    );
+         CREATE TABLE IF NOT EXISTS media (
+                                              origin TEXT NOT NULL,  -- empty string if local media
+                                              media_id TEXT NOT NULL,
+                                              filesystem_id TEXT NOT NULL,
+             -- Type is "local" or "remote"
+                                              type TEXT NOT NULL,
+             -- indicates whether the media and all its thumbnails have been deleted from the
+             -- local cache
+                                              known_deleted BOOLEAN NOT NULL
+         );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS media_id_idx ON media(origin, media_id);
-    CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted);
-"""
+         CREATE UNIQUE INDEX IF NOT EXISTS media_id_idx ON media(origin, media_id);
+         CREATE INDEX IF NOT EXISTS deleted_idx ON media(known_deleted); \
+         """
 
 progress = True
 
@@ -212,19 +212,19 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
     """
 
     local_sql = """
-        SELECT '', media_id, media_id
-        FROM local_media_repository
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
-            AND url_cache IS NULL
-    """
+                SELECT '', media_id, media_id
+                FROM local_media_repository
+                WHERE
+                    COALESCE(last_access_ts, created_ts) < %s
+                  AND url_cache IS NULL \
+                """
 
     remote_sql = """
-        SELECT media_origin, media_id, filesystem_id
-        FROM remote_media_cache
-        WHERE
-            COALESCE(last_access_ts, created_ts) < %s
-    """
+                 SELECT media_origin, media_id, filesystem_id
+                 FROM remote_media_cache
+                 WHERE
+                     COALESCE(last_access_ts, created_ts) < %s \
+                 """
 
     last_access_ts = int(before_date.timestamp() * 1000)
 
@@ -394,6 +394,161 @@ def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should
     print("Deleted", humanize.naturalsize(deleted_bytes, gnu=True), flush=True)
 
 
+def run_remote_cleanup(s3, bucket, s3_prefix, extra_args, synapse_db_conn, local_media_lifetime, remote_media_lifetime, dry_run):
+    expired_media = {
+        "local_media_repository": [],
+        "local_media_repository_thumbnails": [],
+        "remote_media_cache": [],
+        "remote_media_cache_thumbnails": [],
+    }
+
+    if local_media_lifetime:
+        print("Finding expired local media...")
+        cur = synapse_db_conn.cursor()
+
+        sql_local = """
+                    SELECT DISTINCT media_id FROM local_media_repository
+                    WHERE COALESCE(last_access_ts, created_ts) < %s
+                    """
+        last_access_ts_local = int(local_media_lifetime.timestamp() * 1000)
+        cur.execute(sql_local, (last_access_ts_local,))
+        for row in cur:
+            media_id = row[0]
+            expired_media["local_media_repository"].append({
+                "media_id": media_id,
+                "part1": media_id[:2],
+                "part2": media_id[2:4],
+                "part3": media_id[4:],
+            })
+        print(f"Found {len(expired_media['local_media_repository'])} expired local media in local_media_repository")
+
+        sql_thumbnails = """
+                         SELECT DISTINCT media_id FROM local_media_repository_thumbnails
+                         WHERE COALESCE(last_access_ts, created_ts) < %s
+                         """
+        cur.execute(sql_thumbnails, (last_access_ts_local,))
+        for row in cur:
+            media_id = row[0]
+            expired_media["local_media_repository_thumbnails"].append({
+                "media_id": media_id,
+                "part1": media_id[:2],
+                "part2": media_id[2:4],
+                "part3": media_id[4:],
+            })
+        print(f"Found {len(expired_media['local_media_repository_thumbnails'])} expired local media in local_media_repository_thumbnails")
+
+        cur.close()
+
+    if remote_media_lifetime:
+        print("Finding expired remote media...")
+        cur = synapse_db_conn.cursor()
+
+        sql_remote = """
+                     SELECT DISTINCT media_origin, media_id, filesystem_id FROM remote_media_cache
+                     WHERE COALESCE(last_access_ts, created_ts) < %s
+                     """
+        last_access_ts_remote = int(remote_media_lifetime.timestamp() * 1000)
+        cur.execute(sql_remote, (last_access_ts_remote,))
+        for row in cur:
+            origin, media_id, filesystem_id = row
+            expired_media["remote_media_cache"].append({
+                "origin": origin,
+                "media_id": media_id,
+                "filesystem_id": filesystem_id,
+                "part1": filesystem_id[:2],
+                "part2": filesystem_id[2:4],
+                "part3": filesystem_id[4:],
+            })
+        print(f"Found {len(expired_media['remote_media_cache'])} expired remote media in remote_media_cache")
+
+        sql_remote_thumbnails = """
+                                SELECT DISTINCT media_origin, media_id, filesystem_id FROM remote_media_cache_thumbnails
+                                WHERE COALESCE(last_access_ts, created_ts) < %s
+                                """
+        cur.execute(sql_remote_thumbnails, (last_access_ts_remote,))
+        for row in cur:
+            origin, media_id, filesystem_id = row
+            expired_media["remote_media_cache_thumbnails"].append({
+                "origin": origin,
+                "media_id": media_id,
+                "filesystem_id": filesystem_id,
+                "part1": filesystem_id[:2],
+                "part2": filesystem_id[2:4],
+                "part3": filesystem_id[4:],
+            })
+        print(f"Found {len(expired_media['remote_media_cache_thumbnails'])} expired remote media in remote_media_cache_thumbnails")
+
+        cur.close()
+
+    print("Verifying files in S3...")
+
+    category_configs = {
+        "local_media_repository": {"path_prefix": "local_content", "include_origin": False},
+        "local_media_repository_thumbnails": {"path_prefix": "local_thumbnails", "include_origin": False},
+        "remote_media_cache": {"path_prefix": "remote_content", "include_origin": True},
+        "remote_media_cache_thumbnails": {"path_prefix": "remote_thumbnail", "include_origin": True},
+    }
+
+    for category, config in category_configs.items():
+        verified_items = []
+        path_prefix = config["path_prefix"]
+        include_origin = config["include_origin"]
+
+        for item in expired_media[category]:
+            if include_origin:
+                rel_path = os.path.join(path_prefix, item["origin"], item["part1"], item["part2"], item["part3"])
+            else:
+                rel_path = os.path.join(path_prefix, item["part1"], item["part2"], item["part3"])
+
+            key = s3_prefix + rel_path
+            if check_file_in_s3(s3, bucket, key, extra_args):
+                item["s3_key"] = key
+                verified_items.append(item)
+
+        expired_media[category] = verified_items
+
+    print(f"After S3 verification: "
+          f"{len(expired_media['local_media_repository'])} local, "
+          f"{len(expired_media['local_media_repository_thumbnails'])} local thumbnails, "
+          f"{len(expired_media['remote_media_cache'])} remote, "
+          f"{len(expired_media['remote_media_cache_thumbnails'])} remote thumbnails")
+
+    if dry_run:
+        print("Dry run completed, nothing deleted")
+        return
+
+    deleted_counts = {
+        "local_media_repository": 0,
+        "local_media_repository_thumbnails": 0,
+        "remote_media_cache": 0,
+        "remote_media_cache_thumbnails": 0,
+    }
+    for category, items in expired_media.items():
+        for item in items:
+            key = item.get("s3_key")
+            if not key:
+                continue
+            try:
+                if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
+                    s3.delete_object(
+                        Bucket=bucket,
+                        Key=key,
+                        SSECustomerKey=extra_args["SSECustomerKey"],
+                        SSECustomerAlgorithm=extra_args["SSECustomerAlgorithm"],
+                    )
+                else:
+                    s3.delete_object(Bucket=bucket, Key=key)
+                deleted_counts[category] += 1
+            except Exception as e:
+                print(f"Failed to delete {key} from S3: {e}")
+
+    print(f"Successfully deleted from S3: "
+          f"{deleted_counts['local_media_repository']} local, "
+          f"{deleted_counts['local_media_repository_thumbnails']} local thumbnails, "
+          f"{deleted_counts['remote_media_cache']} remote, "
+          f"{deleted_counts['remote_media_cache_thumbnails']} remote thumbnails")
+
+
 def get_sqlite_conn(parser):
     """Attempt to get a sqlite connection to cache.db, or exit.
     """
@@ -404,6 +559,38 @@ def get_sqlite_conn(parser):
         parser.error("Could not open 'cache.db' as sqlite DB: %s" % (e,))
 
     return sqlite_conn
+
+def get_homeserver_media_retention(parser, homeserver_config_path):
+    try:
+        with open(homeserver_config_path) as f:
+            homeserver_yaml = yaml.safe_load(f)
+    except FileNotFoundError:
+        parser.error("Could not find %s" % (homeserver_config_path,))
+    except yaml.YAMLError as e:
+        parser.error("%s is not valid yaml: %s" % (homeserver_config_path, e,))
+
+    if homeserver_yaml is None:
+        return None, None
+
+    media_retention = homeserver_yaml.get("media_retention")
+    if not isinstance(media_retention, dict):
+        return None, None
+
+    local_media_lifetime, remote_media_lifetime = None, None
+
+    try:
+        local_media_lifetime = media_retention.get("local_media_lifetime")
+        if local_media_lifetime is not None:
+            local_media_lifetime = parse_duration(local_media_lifetime)
+
+        remote_media_lifetime = media_retention.get("remote_media_lifetime")
+        if remote_media_lifetime is not None:
+            remote_media_lifetime = parse_duration(remote_media_lifetime)
+    except argparse.ArgumentTypeError as e:
+        parser.error("Invalid media_retention duration: %s" % (e,))
+
+    return local_media_lifetime, remote_media_lifetime
+
 
 def get_homeserver_db_conn(parser, homeserver_config_path):
     """Attempt to get a connection based on the provided YAML path to Synapse's
@@ -490,8 +677,8 @@ def main():
         "duration",
         type=parse_duration,
         help="Fetch rows that haven't been accessed in the duration given,"
-        " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
+             " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
+             " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
     )
     update_db_parser.add_argument(
         "--homeserver-config-path",
@@ -510,7 +697,7 @@ def main():
     update_parser = subparsers.add_parser(
         "update",
         help="Updates local cache. Equivalent to running update-db and"
-        " check-deleted",
+             " check-deleted",
     )
     update_parser.add_argument(
         "base_path", help="Base path of the media store directory"
@@ -519,8 +706,8 @@ def main():
         "duration",
         type=parse_duration,
         help="Fetch rows that haven't been accessed in the duration given,"
-        " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
-        " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
+             " accepts duration of the form of e.g. 1m (one month). Valid suffixes"
+             " are s, h, d, m or y. NOTE: Currently does not remove entries from the cache",
     )
     update_parser.add_argument(
         "--homeserver-config-path",
@@ -531,7 +718,7 @@ def main():
     write_parser = subparsers.add_parser(
         "write",
         help="Outputs all file and directory paths in the local cache that we may not"
-        " have deleted. check-deleted should be run first to update cache.",
+             " have deleted. check-deleted should be run first to update cache.",
     )
     write_parser.add_argument(
         "out",
@@ -586,6 +773,35 @@ def main():
         "--endpoint-url", help="S3 endpoint url to use", default=None
     )
 
+    cleanup_parser = subparsers.add_parser(
+        "cleanup-remote",
+        help="Remove expired remote files due to media_retention setting from homeserver.yaml",
+    )
+    cleanup_parser.add_argument(
+        "--homeserver-config-path",
+        help="Path to the yaml file containing Synapse's settings",
+        default="homeserver.yaml"
+    )
+    cleanup_parser.add_argument("bucket", help="S3 bucket where media is stored")
+    cleanup_parser.add_argument("--prefix", help="Prefix of files in the bucket", default="")
+    cleanup_parser.add_argument(
+        "--endpoint-url", help="S3 endpoint url to use", default=None
+    )
+    cleanup_parser.add_argument(
+        "--sse-customer-key", help="SSE-C key to use",
+    )
+    cleanup_parser.add_argument(
+        "--sse-customer-algo",
+        help="Algorithm for SSE-C, only used if sse-customer-key is also specified",
+        default="AES256",
+    )
+    cleanup_parser.add_argument(
+        "--dry-run",
+        help="Test action",
+        action="store_true",
+        default=False
+    )
+
     args = parser.parse_args()
     if args.no_progress:
         global progress
@@ -634,6 +850,31 @@ def main():
             args.prefix,
             extra_args,
             should_delete=args.delete,
+        )
+        return
+
+    if args.cmd == "cleanup-remote":
+        synapse_db_conn = get_synapse_db_conn(parser, args.homeserver_config_path)
+        local_media_lifetime, remote_media_lifetime = get_homeserver_media_retention(parser, args.homeserver_config_path)
+
+        s3 = boto3.client("s3", endpoint_url=args.endpoint_url)
+        extra_args = {}
+        if args.sse_customer_key:
+            extra_args["SSECustomerKey"] = args.sse_customer_key
+            if args.sse_customer_algo:
+                extra_args["SSECustomerAlgorithm"] = args.sse_customer_algo
+            else:
+                extra_args["SSECustomerAlgorithm"] = "AES256"
+
+        run_remote_cleanup(
+            s3,
+            args.bucket,
+            args.prefix,
+            extra_args,
+            synapse_db_conn,
+            local_media_lifetime,
+            remote_media_lifetime,
+            args.dry_run
         )
         return
 
