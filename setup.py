@@ -1,6 +1,6 @@
 from setuptools import setup
 
-__version__ = "1.6.1"
+__version__ = "1.7.0"
 
 with open("README.md") as f:
     long_description = f.read()
@@ -18,7 +18,7 @@ setup(
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: Apache Software License",
     ],
-    python_requires='>=3.10, <4',
+    python_requires=">=3.10, <4",
     py_modules=["s3_storage_provider"],
     scripts=["scripts/s3_media_upload"],
     install_requires=[
