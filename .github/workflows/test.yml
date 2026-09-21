@@ -69,5 +69,9 @@ jobs:
         curl -q -o round_trip -H "Authorization: Bearer $access_token" http://127.0.0.1:8008/_matrix/client/v1/media/download/${server_name}/${media_id}
         #Verify file against original
         diff round_trip s3_storage_provider.py
-        #Verify file against minio data store
-        diff /tmp/data/s3-storage-provider-tester/local_content/*/*/* s3_storage_provider.py
+        #Verify file against the object store
+        export AWS_ACCESS_KEY_ID=my_access_key_id
+        export AWS_SECRET_ACCESS_KEY=my_secret_access_key
+        export AWS_EC2_METADATA_DISABLED=true
+        aws --endpoint-url http://127.0.0.1:9000/ s3 cp --recursive s3://s3-storage-provider-tester/local_content/ from_s3/
+        diff from_s3/*/*/* s3_storage_provider.py
