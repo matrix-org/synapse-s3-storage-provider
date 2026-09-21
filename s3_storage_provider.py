@@ -310,8 +310,7 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
 
 
 class _S3Responder(Responder):
-    """A Responder for S3. Created by _S3DownloadThread
-    """
+    """A Responder for S3. Created by _S3DownloadThread"""
 
     def __init__(self):
         # Triggered by responder when more data has been requested (or
@@ -328,8 +327,7 @@ class _S3Responder(Responder):
         self.deferred = defer.Deferred()
 
     def write_to_consumer(self, consumer):
-        """See Responder.write_to_consumer
-        """
+        """See Responder.write_to_consumer"""
         self.consumer = consumer
         # We are a IPushProducer, so we start producing immediately until we
         # get a pauseProducing or stopProducing
@@ -342,19 +340,16 @@ class _S3Responder(Responder):
         self.wakeup_event.set()
 
     def resumeProducing(self):
-        """See IPushProducer.resumeProducing
-        """
+        """See IPushProducer.resumeProducing"""
         # The consumer is asking for more data, signal _S3DownloadThread
         self.wakeup_event.set()
 
     def pauseProducing(self):
-        """See IPushProducer.stopProducing
-        """
+        """See IPushProducer.stopProducing"""
         self.wakeup_event.clear()
 
     def stopProducing(self):
-        """See IPushProducer.stopProducing
-        """
+        """See IPushProducer.stopProducing"""
         # The consumer wants no more data ever, signal _S3DownloadThread
         self.stop_event.set()
         self.wakeup_event.set()
@@ -362,8 +357,7 @@ class _S3Responder(Responder):
             self.deferred.errback(Exception("Consumer ask to stop producing"))
 
     def _write(self, chunk):
-        """Writes the chunk of data to consumer. Called by _S3DownloadThread.
-        """
+        """Writes the chunk of data to consumer. Called by _S3DownloadThread."""
         if self.consumer and not self.stop_event.is_set():
             self.consumer.write(chunk)
 
@@ -379,8 +373,7 @@ class _S3Responder(Responder):
             self.deferred.errback(failure)
 
     def _finish(self):
-        """Called when there is no more data to write. Called by _S3DownloadThread.
-        """
+        """Called when there is no more data to write. Called by _S3DownloadThread."""
         if self.consumer:
             self.consumer.unregisterProducer()
             self.consumer = None
