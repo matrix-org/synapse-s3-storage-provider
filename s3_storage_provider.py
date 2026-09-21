@@ -82,8 +82,12 @@ class S3StorageProviderBackend(StorageProvider):
             self.api_kwargs["aws_session_token"] = config["session_token"]
 
         self.api_kwargs["config"] = Config(
-            response_checksum_validation=config.get("response_checksum_validation", "when_required"),
-            request_checksum_calculation=config.get("request_checksum_calculation", "when_required")
+            response_checksum_validation=config.get(
+                "response_checksum_validation", "when_required"
+            ),
+            request_checksum_calculation=config.get(
+                "request_checksum_calculation", "when_required"
+            ),
         )
 
         self._s3_client = None
@@ -97,7 +101,9 @@ class S3StorageProviderBackend(StorageProvider):
         # stopping Synapse takes an extra ~30s as Python waits for the threads
         # to exit.
         reactor.addSystemEventTrigger(
-            "during", "shutdown", self._s3_pool.stop,
+            "during",
+            "shutdown",
+            self._s3_pool.stop,
         )
 
     def _get_s3_client(self):
@@ -215,7 +221,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
             exist then resolves with None.
-    
+
     Returns:
         A deferred which resolves to an _S3Responder if the file exists.
         Otherwise the deferred fails.
@@ -234,7 +240,10 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
             resp = s3_client.get_object(Bucket=bucket, Key=key)
 
     except botocore.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
+        if e.response["Error"]["Code"] in (
+            "404",
+            "NoSuchKey",
+        ):
             logger.info("Media %s not found in S3", key)
             reactor.callFromThread(deferred.callback, None)
             return

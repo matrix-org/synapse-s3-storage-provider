@@ -32,8 +32,7 @@ progress = True
 
 
 def parse_duration(string):
-    """Parse a string into a duration supports suffix of s, h, d, m or y.
-    """
+    """Parse a string into a duration supports suffix of s, h, d, m or y."""
     suffix = string[-1]
     number = string[:-1]
 
@@ -58,7 +57,9 @@ def parse_duration(string):
     elif suffix == "s":
         then = now - datetime.timedelta(seconds=number)
     else:
-        raise argparse.ArgumentTypeError("duration must end in 's', 'h', 'd', 'm' or 'y'")
+        raise argparse.ArgumentTypeError(
+            "duration must end in 's', 'h', 'd', 'm' or 'y'"
+        )
 
     return then
 
@@ -75,16 +76,13 @@ def mark_as_deleted(sqlite_conn, origin, media_id):
 
 
 def get_not_deleted_count(sqlite_conn):
-    """Get count of all rows in our cache that we don't think have been deleted
-    """
+    """Get count of all rows in our cache that we don't think have been deleted"""
     cur = sqlite_conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT COALESCE(count(*), 0) FROM media
         WHERE NOT known_deleted
-        """
-    )
+        """)
     (count,) = cur.fetchone()
     return count
 
