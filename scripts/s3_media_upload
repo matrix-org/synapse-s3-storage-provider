@@ -91,8 +91,7 @@ def get_not_deleted(sqlite_conn):
     """Get all rows in our cache that we don't think have been deleted"""
     cur = sqlite_conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT origin, media_id, filesystem_id, type FROM media
         WHERE NOT known_deleted
         """
@@ -104,7 +103,10 @@ def to_path(origin, filesystem_id, m_type):
     """Get a relative path to the given media"""
     if m_type == "local":
         file_path = os.path.join(
-            "local_content", filesystem_id[:2], filesystem_id[2:4], filesystem_id[4:],
+            "local_content",
+            filesystem_id[:2],
+            filesystem_id[2:4],
+            filesystem_id[4:],
         )
     elif m_type == "remote":
         file_path = os.path.join(
@@ -220,7 +222,9 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
     last_access_ts = int(before_date.timestamp() * 1000)
 
     print(
-        "Syncing files that haven't been accessed since:", before_date.isoformat(" "), flush=True,
+        "Syncing files that haven't been accessed since:",
+        before_date.isoformat(" "),
+        flush=True,
     )
 
     update_count = 0
@@ -242,7 +246,7 @@ def run_update_db(synapse_db_conn, sqlite_conn, before_date):
                 # We use a named (server-side) cursor, so that we don't have to wait
                 # for Postgres to send back all 200M items before we get started with
                 # the sync operation.
-                with synapse_db_conn.cursor('%s_items' % (mtype,)) as synapse_db_curs:
+                with synapse_db_conn.cursor("%s_items" % (mtype,)) as synapse_db_curs:
                     synapse_db_curs.execute(sql, (last_access_ts,))
                     update_count += update_db_process_rows(
                         mtype, sqlite_cur, synapse_db_curs
@@ -306,7 +310,9 @@ def run_check_delete(sqlite_conn, base_path):
     print("Updated", len(deleted), "as deleted", flush=True)
 
 
-def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete):
+def run_upload(
+    s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should_delete
+):
     """Entry point for upload command"""
     total = get_not_deleted_count(sqlite_conn)
 
@@ -342,7 +348,10 @@ def run_upload(s3, bucket, sqlite_conn, base_path, s3_prefix, extra_args, should
             if not check_file_in_s3(s3, bucket, key, extra_args):
                 try:
                     s3.upload_file(
-                        local_path, bucket, key, ExtraArgs=extra_args,
+                        local_path,
+                        bucket,
+                        key,
+                        ExtraArgs=extra_args,
                     )
                 except Exception as e:
                     print("Failed to upload file %s: %s", local_path, e, flush=True)
@@ -397,6 +406,7 @@ def get_sqlite_conn(parser):
 
     return sqlite_conn
 
+
 def get_homeserver_db_conn(parser, homeserver_config_path):
     """Attempt to get a connection based on the provided YAML path to Synapse's
     database, or exit.
@@ -408,7 +418,13 @@ def get_homeserver_db_conn(parser, homeserver_config_path):
     except FileNotFoundError:
         parser.error("Could not find %s" % (homeserver_config_path,))
     except yaml.YAMLError as e:
-        parser.error("%s is not valid yaml: %s" % (homeserver_config_path, e,))
+        parser.error(
+            "%s is not valid yaml: %s"
+            % (
+                homeserver_config_path,
+                e,
+            )
+        )
 
     try:
         database_engine_name = homeserver_yaml["database"]["name"]
@@ -417,7 +433,7 @@ def get_homeserver_db_conn(parser, homeserver_config_path):
             database_path = database_args["database"]
             synapse_db_conn = sqlite3.connect(database=database_path)
         else:
-            config = {k:v for k,v in database_args.items() if not k.startswith("cp_")}
+            config = {k: v for k, v in database_args.items() if not k.startswith("cp_")}
             synapse_db_conn = psycopg2.connect(**config)
     except sqlite3.OperationalError as e:
         parser.error("Could not connect to sqlite3 database: %s" % (e,))
@@ -425,6 +441,7 @@ def get_homeserver_db_conn(parser, homeserver_config_path):
         parser.error("Could not connect to postgres database: %s" % (e,))
 
     return synapse_db_conn
+
 
 def get_database_db_conn(parser):
     """Attempt to get a connection based on database.yaml to Synapse's
@@ -453,6 +470,7 @@ def get_database_db_conn(parser):
 
     return synapse_db_conn
 
+
 def get_synapse_db_conn(parser, homeserver_config_path):
     """Attempt to get a connection based on database.yaml or homeserver.yaml
     to Synapse's database, or exit.
@@ -464,6 +482,7 @@ def get_synapse_db_conn(parser, homeserver_config_path):
         conn = get_homeserver_db_conn(parser, homeserver_config_path)
 
     return conn
+
 
 def main():
     parser = argparse.ArgumentParser(prog="s3_media_upload")
@@ -488,7 +507,7 @@ def main():
     update_db_parser.add_argument(
         "--homeserver-config-path",
         help="Path to the yaml file containing Synapse's DB settings",
-        default="homeserver.yaml"
+        default="homeserver.yaml",
     )
 
     deleted_parser = subparsers.add_parser(
@@ -541,7 +560,9 @@ def main():
     )
     upload_parser.add_argument("bucket", help="S3 bucket to upload to")
 
-    upload_parser.add_argument("--prefix", help="Prefix of files in the bucket", default="")
+    upload_parser.add_argument(
+        "--prefix", help="Prefix of files in the bucket", default=""
+    )
 
     upload_parser.add_argument(
         "--storage-class",
@@ -558,7 +579,8 @@ def main():
     )
 
     upload_parser.add_argument(
-        "--sse-customer-key", help="SSE-C key to use",
+        "--sse-customer-key",
+        help="SSE-C key to use",
     )
 
     upload_parser.add_argument(
