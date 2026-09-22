@@ -40,13 +40,15 @@ jobs:
                 secret_access_key: my_secret_access_key
     - name: Setup minio
       run: |
-        # The version of minio is RELEASE.2022-04-01T03-41-39Z.fips
+        # The version of silo is pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+        # Minio's community version is EOL. Silo is a minio fork which maintains
+        # direct compatibility of minio.
         docker run -d -p 9000:9000 --name minio \
                    -e "MINIO_ACCESS_KEY=my_access_key_id" \
                    -e "MINIO_SECRET_KEY=my_secret_access_key" \
                    -v /tmp/data:/data \
                    -v /tmp/config:/root/.minio \
-                   minio/minio@sha256:b615ce0f18c2adf111c31b751cb79b69551b62a620e85930f6b5b28e7265b0c1 \
+                   pgsty/silo@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46 \
                    server /data
         export AWS_ACCESS_KEY_ID=my_access_key_id
         export AWS_SECRET_ACCESS_KEY=my_secret_access_key
@@ -67,5 +69,9 @@ jobs:
         curl -q -o round_trip -H "Authorization: Bearer $access_token" http://127.0.0.1:8008/_matrix/client/v1/media/download/${server_name}/${media_id}
         #Verify file against original
         diff round_trip s3_storage_provider.py
-        #Verify file against minio data store
-        diff /tmp/data/s3-storage-provider-tester/local_content/*/*/* s3_storage_provider.py
+        #Verify file against the object store
+        export AWS_ACCESS_KEY_ID=my_access_key_id
+        export AWS_SECRET_ACCESS_KEY=my_secret_access_key
+        export AWS_EC2_METADATA_DISABLED=true
+        aws --endpoint-url http://127.0.0.1:9000/ s3 cp --recursive s3://s3-storage-provider-tester/local_content/ from_s3/
+        diff from_s3/*/*/* s3_storage_provider.py

@@ -82,8 +82,12 @@ class S3StorageProviderBackend(StorageProvider):
             self.api_kwargs["aws_session_token"] = config["session_token"]
 
         self.api_kwargs["config"] = Config(
-            response_checksum_validation=config.get("response_checksum_validation", "when_required"),
-            request_checksum_calculation=config.get("request_checksum_calculation", "when_required")
+            response_checksum_validation=config.get(
+                "response_checksum_validation", "when_required"
+            ),
+            request_checksum_calculation=config.get(
+                "request_checksum_calculation", "when_required"
+            ),
         )
 
         self._s3_client = None
@@ -97,7 +101,9 @@ class S3StorageProviderBackend(StorageProvider):
         # stopping Synapse takes an extra ~30s as Python waits for the threads
         # to exit.
         reactor.addSystemEventTrigger(
-            "during", "shutdown", self._s3_pool.stop,
+            "during",
+            "shutdown",
+            self._s3_pool.stop,
         )
 
     def _get_s3_client(self):
@@ -215,7 +221,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
         deferred (Deferred[_S3Responder|None]): If file exists
             resolved with an _S3Responder instance, if it doesn't
             exist then resolves with None.
-    
+
     Returns:
         A deferred which resolves to an _S3Responder if the file exists.
         Otherwise the deferred fails.
@@ -234,7 +240,10 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
             resp = s3_client.get_object(Bucket=bucket, Key=key)
 
     except botocore.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] in ("404", "NoSuchKey",):
+        if e.response["Error"]["Code"] in (
+            "404",
+            "NoSuchKey",
+        ):
             logger.info("Media %s not found in S3", key)
             reactor.callFromThread(deferred.callback, None)
             return
@@ -301,8 +310,7 @@ def _stream_to_producer(reactor, producer, body, status=None, timeout=None):
 
 
 class _S3Responder(Responder):
-    """A Responder for S3. Created by _S3DownloadThread
-    """
+    """A Responder for S3. Created by _S3DownloadThread"""
 
     def __init__(self):
         # Triggered by responder when more data has been requested (or
@@ -319,8 +327,7 @@ class _S3Responder(Responder):
         self.deferred = defer.Deferred()
 
     def write_to_consumer(self, consumer):
-        """See Responder.write_to_consumer
-        """
+        """See Responder.write_to_consumer"""
         self.consumer = consumer
         # We are a IPushProducer, so we start producing immediately until we
         # get a pauseProducing or stopProducing
@@ -333,19 +340,16 @@ class _S3Responder(Responder):
         self.wakeup_event.set()
 
     def resumeProducing(self):
-        """See IPushProducer.resumeProducing
-        """
+        """See IPushProducer.resumeProducing"""
         # The consumer is asking for more data, signal _S3DownloadThread
         self.wakeup_event.set()
 
     def pauseProducing(self):
-        """See IPushProducer.stopProducing
-        """
+        """See IPushProducer.stopProducing"""
         self.wakeup_event.clear()
 
     def stopProducing(self):
-        """See IPushProducer.stopProducing
-        """
+        """See IPushProducer.stopProducing"""
         # The consumer wants no more data ever, signal _S3DownloadThread
         self.stop_event.set()
         self.wakeup_event.set()
@@ -353,8 +357,7 @@ class _S3Responder(Responder):
             self.deferred.errback(Exception("Consumer ask to stop producing"))
 
     def _write(self, chunk):
-        """Writes the chunk of data to consumer. Called by _S3DownloadThread.
-        """
+        """Writes the chunk of data to consumer. Called by _S3DownloadThread."""
         if self.consumer and not self.stop_event.is_set():
             self.consumer.write(chunk)
 
@@ -370,8 +373,7 @@ class _S3Responder(Responder):
             self.deferred.errback(failure)
 
     def _finish(self):
-        """Called when there is no more data to write. Called by _S3DownloadThread.
-        """
+        """Called when there is no more data to write. Called by _S3DownloadThread."""
         if self.consumer:
             self.consumer.unregisterProducer()
             self.consumer = None

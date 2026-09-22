@@ -128,8 +128,7 @@ class StreamingProducerTestCase(unittest.TestCase):
         self.failureResultOf(deferred, Exception)
 
     def wait_for_thread(self):
-        """Wait for something to call `callFromThread` and advance reactor
-        """
+        """Wait for something to call `callFromThread` and advance reactor"""
         self.reactor.thread_event.wait(1)
         self.reactor.thread_event.clear()
         self.reactor.advance(0)
@@ -158,8 +157,7 @@ class ThreadedMemoryReactorClock(MemoryReactorClock):
 
 
 class Channel(object):
-    """Simple channel to mimic a thread safe file like object
-    """
+    """Simple channel to mimic a thread safe file like object"""
 
     def __init__(self):
         self._queue = Queue()
