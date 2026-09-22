@@ -94,8 +94,7 @@ def get_not_deleted(sqlite_conn):
     cur.execute("""
         SELECT origin, media_id, filesystem_id, type FROM media
         WHERE NOT known_deleted
-        """
-    )
+        """)
     return cur
 
 
@@ -536,7 +535,7 @@ def main():
     update_parser.add_argument(
         "--homeserver-config-path",
         help="Path to the yaml file containing Synapse's DB settings",
-        default="homeserver.yaml"
+        default="homeserver.yaml",
     )
 
     write_parser = subparsers.add_parser(
