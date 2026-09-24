@@ -15,8 +15,9 @@
 
 from twisted.internet import defer
 from twisted.python.failure import Failure
-from twisted.test.proto_helpers import MemoryReactorClock
+from twisted.test.proto_helpers import MemoryReactorClock, StringTransport
 from twisted.trial import unittest
+from twisted.web import http
 
 import sys
 
@@ -132,6 +133,51 @@ class StreamingProducerTestCase(unittest.TestCase):
         self.reactor.thread_event.wait(1)
         self.reactor.thread_event.clear()
         self.reactor.advance(0)
+
+
+class StopProducingTestCase(unittest.TestCase):
+    """Client disconnects mid-download, as seen with Synapse's media repository."""
+
+    def _make_request(self):
+        channel = http.HTTPChannel()
+        channel.requestFactory = http.Request
+        channel.makeConnection(StringTransport())
+        request = http.Request(channel, queued=False)
+        channel.requests.append(request)
+        request.method, request.uri, request.clientproto = b"GET", b"/", b"HTTP/1.1"
+        return channel, request
+
+    def _disconnect_and_finish(self):
+        channel, request = self._make_request()
+        producer = _S3Responder()
+        deferred = producer.write_to_consumer(request)
+        self.assertIs(request.producer, producer)
+
+        # The transport goes away and the channel stops the request's producer.
+        channel.stopProducing()
+        self.failureResultOf(deferred, Exception)
+
+        # What Synapse's `respond_with_responder` then does: unregister the
+        # producer if still registered, and finish the request, which makes
+        # Twisted clean the request up (deleting `request.channel`).
+        if request.producer:
+            request.unregisterProducer()
+        request.finish()
+        return channel, request, producer
+
+    def test_stop_producing_unregisters(self):
+        channel, request, producer = self._disconnect_and_finish()
+        self.assertIsNone(request.producer)
+        self.assertIsNone(channel._requestProducer)
+
+    def test_finish_after_stop_and_request_cleanup(self):
+        _, _, producer = self._disconnect_and_finish()
+        # Queued by the download thread's `finally` after it notices the stop.
+        producer._finish()
+
+    def test_error_after_stop_and_request_cleanup(self):
+        _, _, producer = self._disconnect_and_finish()
+        producer._error(Failure(Exception("S3 read failed")))
 
 
 class ThreadedMemoryReactorClock(MemoryReactorClock):
