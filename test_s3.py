@@ -155,6 +155,12 @@ class StopProducingTestCase(unittest.TestCase):
 
         # The transport goes away and the channel stops the request's producer.
         channel.stopProducing()
+        # Everything must be deregistered already: without the fix these
+        # references survive until Synapse's own cleanup below, so a test that
+        # only checked them afterwards would pass either way.
+        self.assertIsNone(request.producer)
+        self.assertIsNone(channel._requestProducer)
+        self.assertIsNone(producer.consumer)
         self.failureResultOf(deferred, Exception)
 
         # What Synapse's `respond_with_responder` then does: unregister the
@@ -164,11 +170,6 @@ class StopProducingTestCase(unittest.TestCase):
             request.unregisterProducer()
         request.finish()
         return channel, request, producer
-
-    def test_stop_producing_unregisters(self):
-        channel, request, producer = self._disconnect_and_finish()
-        self.assertIsNone(request.producer)
-        self.assertIsNone(channel._requestProducer)
 
     def test_finish_after_stop_and_request_cleanup(self):
         _, _, producer = self._disconnect_and_finish()

@@ -350,11 +350,9 @@ class _S3Responder(Responder):
 
     def stopProducing(self):
         """See IPushProducer.stopProducing"""
-        # Unregister from the consumer now, while it can still accept that, and
-        # forget it: the download thread's queued `_finish`/`_error` callbacks
-        # run later, possibly after the request has been finished and torn
-        # down, and must not touch it again. This mirrors Synapse's own
-        # `ThreadedFileSender.stopProducing`.
+        # Unregister the consumer before calling `self.deferred.errback`, which
+        # can trigger Synapse's request cleanup. This prevents `_finish`,
+        # `_error` and `_write` from attempting to use the torn-down request.
         if self.consumer:
             self.consumer.unregisterProducer()
             self.consumer = None
