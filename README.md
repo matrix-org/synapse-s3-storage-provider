@@ -56,6 +56,15 @@ media_storage_providers:
     # Default is 'when_required'
     # request_checksum_calculation: "when_supported" | "when_required"
     # response_checksum_validation: "when_supported" | "when_required"
+
+    # Timeouts (in seconds) and the total number of attempts for each request
+    # to S3. By default botocore waits up to 60 seconds to connect and retries
+    # a few times, so while S3 is unreachable media requests can take minutes
+    # to fail. Lower values make them fail fast. read_timeout applies to a
+    # single socket read, not to the whole download.
+    #connect_timeout: 5
+    #read_timeout: 30
+    #max_attempts: 2
     
 ```
 
