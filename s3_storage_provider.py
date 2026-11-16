@@ -30,8 +30,8 @@ from twisted.python.threadpool import ThreadPool
 
 from synapse.logging.context import make_deferred_yieldable
 from synapse.module_api import ModuleApi, run_in_background
-from synapse.rest.media.v1._base import Responder
-from synapse.rest.media.v1.storage_provider import StorageProvider
+from synapse.media._base import Responder
+from synapse.media.storage_provider import StorageProvider
 
 logger = logging.getLogger("synapse.s3")
 
