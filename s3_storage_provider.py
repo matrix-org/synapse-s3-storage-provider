@@ -202,9 +202,16 @@ class S3StorageProviderBackend(StorageProvider):
         if "session_token" in config:
             result["session_token"] = config["session_token"]
 
+        # SSE-C: customer-provided key
         if "sse_customer_key" in config:
             result["extra_args"]["SSECustomerKey"] = config["sse_customer_key"]
+            # Default algorithm if not provided
             result["extra_args"]["SSECustomerAlgorithm"] = config.get(
+                "sse_customer_algo", "AES256"
+            )
+        # SSE-S3: AWS-managed
+        elif "sse_customer_algo" in config:
+            result["extra_args"]["ServerSideEncryption"] = config.get(
                 "sse_customer_algo", "AES256"
             )
 
@@ -229,6 +236,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
     logger.info("Fetching %s from S3", key)
 
     try:
+        # SSE-C: pass keys if present
         if "SSECustomerKey" in extra_args and "SSECustomerAlgorithm" in extra_args:
             resp = s3_client.get_object(
                 Bucket=bucket,
@@ -237,6 +245,7 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
                 SSECustomerAlgorithm=extra_args["SSECustomerAlgorithm"],
             )
         else:
+            # SSE-S3: AWS manages the key
             resp = s3_client.get_object(Bucket=bucket, Key=key)
 
     except botocore.exceptions.ClientError as e:
