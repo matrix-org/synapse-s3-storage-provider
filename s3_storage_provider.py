@@ -81,14 +81,27 @@ class S3StorageProviderBackend(StorageProvider):
         if "session_token" in config:
             self.api_kwargs["aws_session_token"] = config["session_token"]
 
-        self.api_kwargs["config"] = Config(
-            response_checksum_validation=config.get(
+        config_kwargs = {
+            "response_checksum_validation": config.get(
                 "response_checksum_validation", "when_required"
             ),
-            request_checksum_calculation=config.get(
+            "request_checksum_calculation": config.get(
                 "request_checksum_calculation", "when_required"
             ),
-        )
+        }
+
+        # botocore defaults (60s per attempt, several attempts) are kept unless
+        # configured; lower values make requests fail fast when S3 is down.
+        if "connect_timeout" in config:
+            config_kwargs["connect_timeout"] = config["connect_timeout"]
+
+        if "read_timeout" in config:
+            config_kwargs["read_timeout"] = config["read_timeout"]
+
+        if "max_attempts" in config:
+            config_kwargs["retries"] = {"max_attempts": config["max_attempts"]}
+
+        self.api_kwargs["config"] = Config(**config_kwargs)
 
         self._s3_client = None
         self._s3_client_lock = threading.Lock()
@@ -208,6 +221,17 @@ class S3StorageProviderBackend(StorageProvider):
                 "sse_customer_algo", "AES256"
             )
 
+        for option in ("connect_timeout", "read_timeout"):
+            if option in config:
+                value = float(config[option])
+                assert value > 0, "%s must be positive" % (option,)
+                result[option] = value
+
+        if "max_attempts" in config:
+            max_attempts = int(config["max_attempts"])
+            assert max_attempts >= 1, "max_attempts must be at least 1"
+            result["max_attempts"] = max_attempts
+
         return result
 
 
@@ -248,6 +272,14 @@ def s3_download_task(s3_client, bucket, key, extra_args, deferred):
             reactor.callFromThread(deferred.callback, None)
             return
 
+        reactor.callFromThread(deferred.errback, Failure())
+        return
+
+    except Exception:
+        # Anything else (e.g. botocore.exceptions.EndpointConnectionError or a
+        # timeout while S3 is unreachable) must also resolve the deferred,
+        # otherwise `fetch` never returns and the media request hangs.
+        logger.warning("Failed to fetch %s from S3", key, exc_info=True)
         reactor.callFromThread(deferred.errback, Failure())
         return
 

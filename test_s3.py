@@ -30,7 +30,17 @@ from threading import Event, Thread
 
 from mock import Mock
 
-from s3_storage_provider import _stream_to_producer, _S3Responder, _ProducerStatus
+import botocore.exceptions
+from mock import patch
+
+import s3_storage_provider
+from s3_storage_provider import (
+    S3StorageProviderBackend,
+    _stream_to_producer,
+    _S3Responder,
+    _ProducerStatus,
+    s3_download_task,
+)
 
 
 class StreamingProducerTestCase(unittest.TestCase):
@@ -179,3 +189,80 @@ class Channel(object):
 
     def close(self):
         pass
+
+
+class _ImmediateReactor(object):
+    """Runs `callFromThread` calls synchronously, for testing worker functions."""
+
+    def callFromThread(self, f, *args, **kwargs):
+        f(*args, **kwargs)
+
+
+class S3DownloadTaskTestCase(unittest.TestCase):
+    def _download(self, error):
+        s3_client = Mock()
+        s3_client.get_object.side_effect = error
+        deferred = defer.Deferred()
+        with patch.object(s3_storage_provider, "reactor", _ImmediateReactor()):
+            s3_download_task(s3_client, "bucket", "key", {}, deferred)
+        return deferred
+
+    def test_not_found_resolves_with_none(self):
+        error = botocore.exceptions.ClientError(
+            {"Error": {"Code": "NoSuchKey"}}, "GetObject"
+        )
+        result = []
+        self._download(error).addCallback(result.append)
+        self.assertEqual(result, [None])
+
+    def test_connection_error_fails_deferred(self):
+        # Previously only ClientError was handled, so the deferred was never
+        # resolved and the media request hung while S3 was unreachable.
+        error = botocore.exceptions.EndpointConnectionError(
+            endpoint_url="https://s3.example.com"
+        )
+        failures = []
+        self._download(error).addErrback(failures.append)
+        self.assertEqual(len(failures), 1)
+        failures[0].trap(botocore.exceptions.EndpointConnectionError)
+
+    def test_timeout_fails_deferred(self):
+        error = botocore.exceptions.ConnectTimeoutError(
+            endpoint_url="https://s3.example.com"
+        )
+        failures = []
+        self._download(error).addErrback(failures.append)
+        self.assertEqual(len(failures), 1)
+        failures[0].trap(botocore.exceptions.ConnectTimeoutError)
+
+
+class ClientConfigTestCase(unittest.TestCase):
+    def _backend(self, **options):
+        hs = Mock()
+        hs.config.media.media_store_path = "/tmp"
+        config = S3StorageProviderBackend.parse_config(dict(bucket="bucket", **options))
+        with patch.object(s3_storage_provider, "reactor", Mock()):
+            backend = S3StorageProviderBackend(hs, config)
+        self.addCleanup(backend._s3_pool.stop)
+        return backend.api_kwargs["config"]
+
+    def test_botocore_defaults_without_options(self):
+        config = self._backend()
+        self.assertEqual(config.connect_timeout, 60)
+        self.assertEqual(config.read_timeout, 60)
+        self.assertIsNone(config.retries)
+
+    def test_timeouts_and_attempts(self):
+        config = self._backend(connect_timeout=5, read_timeout="30", max_attempts=2)
+        self.assertEqual(config.connect_timeout, 5.0)
+        self.assertEqual(config.read_timeout, 30.0)
+        self.assertEqual(config.retries, {"max_attempts": 2})
+
+    def test_invalid_values_are_rejected(self):
+        for options in (
+            {"connect_timeout": 0},
+            {"read_timeout": -1},
+            {"max_attempts": 0},
+        ):
+            with self.assertRaises(AssertionError):
+                S3StorageProviderBackend.parse_config(dict(bucket="bucket", **options))
